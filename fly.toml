@@ -1,0 +1,11 @@
+app = "tg-auction-bot"
+primary_region = "sin"
+
+[env]
+PORT = "8080"
+
+[[vm]]
+cpu_kind = "shared"
+cpus = 1
+memory = "1gb"
+memory_mb = 1_024

@@ -42,5 +42,6 @@
     pkgs.cargo-deny
     pkgs.cargo-autoinherit
     pkgs.openssl
+    pkgs.flyctl
   ];
 }
