@@ -41,12 +41,16 @@ use crate::util::parse_money_to_cents;
 type SharedContext = Arc<AppContext>;
 type BotDialogue = Dialogue<ConversationState, DialogueStorage>;
 
+const MAIN_MENU_TEXT: &str = "What would you like to do?";
+
 pub fn build_schema() -> UpdateHandler<anyhow::Error> {
   let message_handler = Update::filter_message()
     .enter_dialogue::<Message, DialogueStorage, ConversationState>()
     .branch(command_branch())
     .branch(dptree::case![ConversationState::AddItem(draft)].endpoint(handle_additem_message))
     .branch(dptree::case![ConversationState::PlaceBid(draft)].endpoint(handle_bid_message))
+    .branch(dptree::case![ConversationState::AddCategory { admin_tg_id }].endpoint(handle_add_category_message))
+    .branch(dptree::case![ConversationState::CloseItem { admin_tg_id }].endpoint(handle_close_item_message))
     .branch(dptree::endpoint(handle_idle_text));
 
   let callback_handler = Update::filter_callback_query()
@@ -59,98 +63,151 @@ pub fn build_schema() -> UpdateHandler<anyhow::Error> {
 fn command_branch() -> UpdateHandler<anyhow::Error> {
   dptree::entry()
     .filter_command::<Command>()
-    .branch(dptree::case![Command::Start].endpoint(handle_help))
+    .branch(dptree::case![Command::Start].endpoint(handle_start))
     .branch(dptree::case![Command::Help].endpoint(handle_help))
-    .branch(dptree::case![Command::Browse].endpoint(handle_browse))
-    .branch(dptree::case![Command::Item { id }].endpoint(handle_item))
-    .branch(dptree::case![Command::Favorites].endpoint(handle_favorites))
-    .branch(dptree::case![Command::Mybids].endpoint(handle_my_bids))
-    .branch(dptree::case![Command::Addcat { name }].endpoint(handle_add_category))
-    .branch(dptree::case![Command::Additem].endpoint(start_additem))
-    .branch(dptree::case![Command::Close { item_id }].endpoint(handle_close_item))
+}
+
+#[instrument(skip(bot, ctx, dialogue))]
+async fn handle_start(bot: Bot, dialogue: BotDialogue, ctx: SharedContext, msg: Message) -> HandlerResult {
+  dialogue.reset().await?;
+  let user = msg.from.as_ref().context("message missing sender")?;
+  let user_id = user.id.0 as i64;
+  send_main_menu_message(&bot, &ctx, msg.chat.id, user_id).await
 }
 
 #[instrument(skip(bot))]
 async fn handle_help(bot: Bot, msg: Message) -> HandlerResult {
-  let text = Command::descriptions();
-  bot.send_message(msg.chat.id, text.to_string()).await?;
+  let mut text = Command::descriptions().to_string();
+  text.push_str(
+    "\n\nAll auction features are available from the on-screen menu buttons. Use /start to open the menu again.",
+  );
+  bot.send_message(msg.chat.id, text).await?;
   Ok(())
 }
 
 #[instrument(skip(bot, ctx))]
-async fn handle_browse(bot: Bot, ctx: SharedContext, msg: Message) -> HandlerResult {
-  send_categories(&bot, &ctx, msg.chat.id).await
+async fn send_main_menu_message(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id: i64) -> HandlerResult {
+  bot
+    .send_message(chat, MAIN_MENU_TEXT)
+    .reply_markup(main_menu_keyboard(ctx, user_id))
+    .await?;
+  Ok(())
 }
 
 #[instrument(skip(bot, ctx))]
-async fn handle_item(bot: Bot, ctx: SharedContext, msg: Message, id: i64) -> HandlerResult {
-  let viewer = msg.from.as_ref().map(|user| user.id.0 as i64);
-  if !send_item(&bot, &ctx, msg.chat.id, id, viewer).await? {
-    bot.send_message(msg.chat.id, "Item not found.").await?;
+async fn show_main_menu(
+  bot: &Bot,
+  ctx: &SharedContext,
+  chat: ChatId,
+  message_id: MessageId,
+  user_id: i64,
+) -> HandlerResult {
+  let keyboard = main_menu_keyboard(ctx, user_id);
+  let request = bot
+    .edit_message_text(chat, message_id, MAIN_MENU_TEXT)
+    .reply_markup(keyboard);
+  if let Err(err) = request.await
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+      return Err(err.into());
+    }
+  Ok(())
+}
+
+fn main_menu_keyboard(ctx: &SharedContext, user_id: i64) -> InlineKeyboardMarkup {
+  let mut rows = vec![vec![InlineKeyboardButton::callback(
+    "Catalogue",
+    "menu:catalogue".to_string(),
+  )]];
+
+  rows.push(vec![
+    InlineKeyboardButton::callback("My bids", "menu:my_bids".to_string()),
+    InlineKeyboardButton::callback("My favorites", "menu:favorites".to_string()),
+  ]);
+
+  rows.push(vec![InlineKeyboardButton::callback(
+    "My settings",
+    "menu:settings".to_string(),
+  )]);
+
+  if ctx.is_admin(user_id) {
+    rows.push(vec![InlineKeyboardButton::callback(
+      "Admin panel",
+      "menu:admin".to_string(),
+    )]);
   }
+
+  InlineKeyboardMarkup::new(rows)
+}
+
+fn admin_menu_keyboard() -> InlineKeyboardMarkup {
+  InlineKeyboardMarkup::new(vec![
+    vec![
+      InlineKeyboardButton::callback("Add category", "admin:add_category".to_string()),
+      InlineKeyboardButton::callback("Add item", "admin:add_item".to_string()),
+    ],
+    vec![InlineKeyboardButton::callback(
+      "Close item",
+      "admin:close_item".to_string(),
+    )],
+    vec![InlineKeyboardButton::callback("< Main menu", "menu:root".to_string())],
+  ])
+}
+
+fn main_menu_only_keyboard() -> InlineKeyboardMarkup {
+  InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+    "< Main menu",
+    "menu:root".to_string(),
+  )]])
+}
+
+fn settings_menu_keyboard() -> InlineKeyboardMarkup {
+  main_menu_only_keyboard()
+}
+
+#[instrument(skip(bot, ctx))]
+async fn show_catalogue_menu(bot: &Bot, ctx: &SharedContext, chat: ChatId, message_id: MessageId) -> HandlerResult {
+  update_categories_menu(bot, ctx, chat, message_id).await
+}
+
+#[instrument(skip(bot))]
+async fn show_admin_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> HandlerResult {
+  let request = bot
+    .edit_message_text(chat, message_id, "Admin panel\n\nChoose an action:")
+    .reply_markup(admin_menu_keyboard());
+  if let Err(err) = request.await
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+      return Err(err.into());
+    }
+  Ok(())
+}
+
+#[instrument(skip(bot))]
+async fn show_settings_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> HandlerResult {
+  let request = bot
+    .edit_message_text(chat, message_id, "Settings\n\nNothing to configure yet. Stay tuned!")
+    .reply_markup(settings_menu_keyboard());
+  if let Err(err) = request.await
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+      return Err(err.into());
+    }
   Ok(())
 }
 
 #[instrument(skip(bot, ctx))]
-async fn handle_bid(bot: Bot, ctx: SharedContext, msg: Message, item_id: i64, amount: String) -> HandlerResult {
-  let user = msg.from.as_ref().context("message missing sender")?;
-  let bidder_id = user.id.0 as i64;
-  let amount_text = amount.trim();
-
-  match validate_bid(&ctx, item_id, amount_text).await {
-    Ok((item, amount_cents)) => match ctx.db().place_bid(item_id, bidder_id, amount_cents).await {
-      Ok(_) => {
-        bot
-          .send_message(
-            msg.chat.id,
-            format!("Bid placed at {} for item #{}.", format_cents(amount_cents), item_id),
-          )
-          .await?;
-        let _ = notify_seller(&bot, &item, user, amount_cents).await;
-        match send_item(&bot, &ctx, msg.chat.id, item_id, Some(bidder_id)).await {
-          Ok(true) => {},
-          Ok(false) => warn!(item_id, "item no longer available after bid"),
-          Err(err) => warn!(error = %err, item_id, "failed to present item after bid"),
-        }
-      },
-      Err(err) => {
-        warn!(error = %err, item_id, bidder_id, "failed to store bid");
-        bot
-          .send_message(msg.chat.id, "Failed to place bid, try again later.")
-          .await?;
-      },
-    },
-    Err(BidError::Storage(err)) => {
-      warn!(error = %err, item_id, bidder_id, "storage error while validating bid");
-      bot
-        .send_message(msg.chat.id, "Failed to place bid, try again later.")
-        .await?;
-    },
-    Err(other) => {
-      bot.send_message(msg.chat.id, other.user_message()).await?;
-    },
-  }
-
-  Ok(())
-}
-
-#[instrument(skip(bot, ctx))]
-async fn handle_favorites(bot: Bot, ctx: SharedContext, msg: Message) -> HandlerResult {
-  let user = msg.from.as_ref().context("message missing sender")?;
-  let user_id = user.id.0 as i64;
+async fn send_favorites_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id: i64) -> HandlerResult {
   let favorites = ctx.db().list_favorites(user_id).await?;
 
   if favorites.is_empty() {
-    bot.send_message(msg.chat.id, "No favorites yet.").await?;
+    bot.send_message(chat, "No favorites yet.").await?;
     return Ok(());
   }
 
   bot
-    .send_message(msg.chat.id, format!("Favorites ({}):", favorites.len()))
+    .send_message(chat, format!("Favorites ({}):", favorites.len()))
     .await?;
 
   for item in favorites {
-    if !send_item(&bot, &ctx, msg.chat.id, item.id, Some(user_id)).await? {
+    if !send_item(bot, ctx, chat, item.id, Some(user_id)).await? {
       warn!(item_id = item.id, "favorite item missing while rendering");
     }
   }
@@ -159,85 +216,24 @@ async fn handle_favorites(bot: Bot, ctx: SharedContext, msg: Message) -> Handler
 }
 
 #[instrument(skip(bot, ctx))]
-async fn handle_my_bids(bot: Bot, ctx: SharedContext, msg: Message) -> HandlerResult {
-  let user = msg.from.as_ref().context("message missing sender")?;
-  let user_id = user.id.0 as i64;
+async fn send_my_bids_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id: i64) -> HandlerResult {
   let bids = ctx.db().list_user_bid_items(user_id).await?;
 
   if bids.is_empty() {
-    bot
-      .send_message(msg.chat.id, "You have not placed any bids yet.")
-      .await?;
+    bot.send_message(chat, "You have not placed any bids yet.").await?;
     return Ok(());
   }
 
   bot
-    .send_message(msg.chat.id, format!("Active bids ({} items):", bids.len()))
+    .send_message(chat, format!("Active bids ({} items):", bids.len()))
     .await?;
 
   for (item, _) in bids {
-    if !send_item(&bot, &ctx, msg.chat.id, item.id, Some(user_id)).await? {
+    if !send_item(bot, ctx, chat, item.id, Some(user_id)).await? {
       warn!(item_id = item.id, "bid item missing while rendering");
     }
   }
 
-  Ok(())
-}
-
-#[instrument(skip(bot, ctx))]
-async fn handle_add_category(bot: Bot, ctx: SharedContext, msg: Message, name: String) -> HandlerResult {
-  let admin = msg.from.context("message missing sender")?.id.0 as i64;
-  if !ensure_admin(&ctx, admin, msg.chat.id, &bot).await? {
-    return Ok(());
-  }
-  let trimmed = name.trim();
-  if trimmed.is_empty() {
-    bot
-      .send_message(msg.chat.id, "Provide a non-empty category name.")
-      .await?;
-    return Ok(());
-  }
-  let (category, existing) = ensure_category(&ctx, trimmed).await?;
-  if existing {
-    bot
-      .send_message(
-        msg.chat.id,
-        format!("Category already exists: {} (#{})", category.name, category.id),
-      )
-      .await?;
-  } else {
-    bot
-      .send_message(
-        msg.chat.id,
-        format!("Category created: {} (#{})", category.name, category.id),
-      )
-      .await?;
-  }
-  Ok(())
-}
-
-#[instrument(skip(bot, ctx, dialogue))]
-async fn start_additem(bot: Bot, dialogue: BotDialogue, ctx: SharedContext, msg: Message) -> HandlerResult {
-  let from = msg.from.as_ref().context("message missing sender")?;
-  let admin_id = from.id.0 as i64;
-  if !ensure_admin(&ctx, admin_id, msg.chat.id, &bot).await? {
-    return Ok(());
-  }
-
-  dialogue.reset().await?;
-
-  let image_file_id = msg
-    .reply_to_message()
-    .and_then(|reply| reply.photo())
-    .and_then(|photos| photos.last())
-    .map(|photo| photo.file.id.clone());
-
-  let draft = AddItemDraft::new(admin_id, image_file_id);
-  dialogue.update(ConversationState::AddItem(draft)).await?;
-
-  bot
-    .send_message(msg.chat.id, "Enter category name (existing or new):")
-    .await?;
   Ok(())
 }
 
@@ -252,13 +248,28 @@ async fn handle_additem_message(
   let user = msg.from.as_ref().context("message missing sender")?;
   if user.id.0 as i64 != draft.seller_tg_id {
     bot
-      .send_message(msg.chat.id, "Only the admin who started /additem can respond.")
+      .send_message(
+        msg.chat.id,
+        "Only the admin who started this item creation can respond.",
+      )
       .await?;
     return Ok(());
   }
 
+  if draft.image_file_id.is_none()
+    && let Some(photo) = msg.photo().and_then(|photos| photos.last()) {
+      draft.image_file_id = Some(photo.file.id.clone());
+      dialogue.update(ConversationState::AddItem(draft.clone())).await?;
+    }
+
   let text = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty());
   let chat_id = msg.chat.id;
+
+  if matches!(text, Some(value) if value.eq_ignore_ascii_case("cancel")) {
+    dialogue.reset().await?;
+    bot.send_message(chat_id, "Item creation cancelled.").await?;
+    return Ok(());
+  }
 
   match draft.stage {
     DraftStage::Category => {
@@ -403,6 +414,93 @@ async fn handle_bid_message(
   Ok(())
 }
 
+#[instrument(skip(bot, ctx, dialogue))]
+async fn handle_add_category_message(
+  bot: Bot,
+  dialogue: BotDialogue,
+  ctx: SharedContext,
+  msg: Message,
+  admin_tg_id: i64,
+) -> HandlerResult {
+  let user = msg.from.as_ref().context("message missing sender")?;
+  if user.id.0 as i64 != admin_tg_id {
+    bot
+      .send_message(msg.chat.id, "Only the admin who started this action can respond.")
+      .await?;
+    return Ok(());
+  }
+
+  let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
+    bot
+      .send_message(msg.chat.id, "Send the new category name or type cancel to stop.")
+      .await?;
+    return Ok(());
+  };
+
+  if raw_text.eq_ignore_ascii_case("cancel") {
+    dialogue.reset().await?;
+    bot.send_message(msg.chat.id, "Category creation cancelled.").await?;
+    return Ok(());
+  }
+
+  let (category, existing) = ensure_category(&ctx, raw_text).await?;
+  dialogue.reset().await?;
+
+  let response = if existing {
+    format!("Category already exists: {} (#{})", category.name, category.id)
+  } else {
+    format!("Category created: {} (#{})", category.name, category.id)
+  };
+
+  bot.send_message(msg.chat.id, response).await?;
+  Ok(())
+}
+
+#[instrument(skip(bot, ctx, dialogue))]
+async fn handle_close_item_message(
+  bot: Bot,
+  dialogue: BotDialogue,
+  ctx: SharedContext,
+  msg: Message,
+  admin_tg_id: i64,
+) -> HandlerResult {
+  let user = msg.from.as_ref().context("message missing sender")?;
+  if user.id.0 as i64 != admin_tg_id {
+    bot
+      .send_message(msg.chat.id, "Only the admin who started this action can respond.")
+      .await?;
+    return Ok(());
+  }
+
+  let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
+    bot
+      .send_message(msg.chat.id, "Send the item ID to close or type cancel to stop.")
+      .await?;
+    return Ok(());
+  };
+
+  if raw_text.eq_ignore_ascii_case("cancel") {
+    dialogue.reset().await?;
+    bot.send_message(msg.chat.id, "Item closure cancelled.").await?;
+    return Ok(());
+  }
+
+  let item_id: i64 = match raw_text.parse() {
+    Ok(value) => value,
+    Err(_) => {
+      bot.send_message(msg.chat.id, "Provide a numeric item ID.").await?;
+      return Ok(());
+    },
+  };
+
+  ctx.db().close_item(item_id).await?;
+  dialogue.reset().await?;
+  bot
+    .send_message(msg.chat.id, format!("Item #{item_id} closed."))
+    .await?;
+  Ok(())
+}
+
 #[instrument(skip(bot))]
 async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> HandlerResult {
   if matches!(state, ConversationState::Idle)
@@ -412,26 +510,10 @@ async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> H
       // unknown command, ignore to let telegram handle
     } else {
       bot
-        .send_message(
-          msg.chat.id,
-          "I did not understand that. Use /help to see available commands.",
-        )
+        .send_message(msg.chat.id, "I did not understand that. Use the menu buttons or /help.")
         .await?;
     }
   }
-  Ok(())
-}
-
-#[instrument(skip(bot, ctx))]
-async fn handle_close_item(bot: Bot, ctx: SharedContext, msg: Message, item_id: i64) -> HandlerResult {
-  let admin_id = msg.from.context("message missing sender")?.id.0 as i64;
-  if !ensure_admin(&ctx, admin_id, msg.chat.id, &bot).await? {
-    return Ok(());
-  }
-  ctx.db().close_item(item_id).await?;
-  bot
-    .send_message(msg.chat.id, format!("Item #{item_id} closed."))
-    .await?;
   Ok(())
 }
 
@@ -446,12 +528,100 @@ async fn handle_callback_query(
   let user_id = query.from.id.0 as i64;
   let message_ctx = query.message.as_ref().map(|message| (message.chat().id, message.id()));
 
-  if let Some(data) = query.data.as_deref() {
-    if let Some((prefix, value)) = data.split_once(':') {
+  if let Some(data) = query.data.as_deref()
+    && let Some((prefix, value)) = data.split_once(':') {
       match prefix {
-        "cat" => {
-          if let Ok(category_id) = value.parse::<i64>() {
+        "menu" => match value {
+          "root" => {
+            dialogue.reset().await?;
             if let Some((chat_id, message_id)) = message_ctx {
+              show_main_menu(&bot, &ctx, chat_id, message_id, user_id).await?;
+            }
+          },
+          "catalogue" => {
+            dialogue.reset().await?;
+            if let Some((chat_id, message_id)) = message_ctx {
+              show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
+            }
+          },
+          "favorites" => {
+            if let Some((chat_id, _)) = message_ctx {
+              send_favorites_list(&bot, &ctx, chat_id, user_id).await?;
+              callback_text = Some("Shared your favorites.".to_string());
+            }
+          },
+          "my_bids" => {
+            if let Some((chat_id, _)) = message_ctx {
+              send_my_bids_list(&bot, &ctx, chat_id, user_id).await?;
+              callback_text = Some("Shared your bids.".to_string());
+            }
+          },
+          "settings" => {
+            dialogue.reset().await?;
+            if let Some((chat_id, message_id)) = message_ctx {
+              show_settings_menu(&bot, chat_id, message_id).await?;
+            }
+          },
+          "admin" => {
+            if ctx.is_admin(user_id) {
+              dialogue.reset().await?;
+              if let Some((chat_id, message_id)) = message_ctx {
+                show_admin_menu(&bot, chat_id, message_id).await?;
+              }
+            } else {
+              callback_text = Some("Admins only.".to_string());
+            }
+          },
+          _ => {},
+        },
+        "admin" => {
+          if !ctx.is_admin(user_id) {
+            callback_text = Some("Admins only.".to_string());
+          } else {
+            match value {
+              "add_category" => {
+                dialogue.reset().await?;
+                dialogue
+                  .update(ConversationState::AddCategory { admin_tg_id: user_id })
+                  .await?;
+                if let Some((chat_id, _)) = message_ctx {
+                  bot.send_message(chat_id, "Send the new category name:").await?;
+                }
+                callback_text = Some("Waiting for category name.".to_string());
+              },
+              "add_item" => {
+                dialogue.reset().await?;
+                dialogue
+                  .update(ConversationState::AddItem(AddItemDraft::new(user_id, None)))
+                  .await?;
+                if let Some((chat_id, _)) = message_ctx {
+                  bot
+                    .send_message(
+                      chat_id,
+                      "Enter category name (existing or new). You can send a photo at any step and it will be \
+                       attached.",
+                    )
+                    .await?;
+                }
+                callback_text = Some("Starting item creation.".to_string());
+              },
+              "close_item" => {
+                dialogue.reset().await?;
+                dialogue
+                  .update(ConversationState::CloseItem { admin_tg_id: user_id })
+                  .await?;
+                if let Some((chat_id, _)) = message_ctx {
+                  bot.send_message(chat_id, "Send the item ID to close:").await?;
+                }
+                callback_text = Some("Awaiting item ID.".to_string());
+              },
+              _ => {},
+            }
+          }
+        },
+        "cat" => {
+          if let Ok(category_id) = value.parse::<i64>()
+            && let Some((chat_id, message_id)) = message_ctx {
               let categories = ctx.db().list_categories().await?;
               if let Some(category) = categories.into_iter().find(|c| c.id == category_id) {
                 show_category_items_menu(&bot, &ctx, chat_id, message_id, category.id, category.name.as_str())
@@ -460,23 +630,19 @@ async fn handle_callback_query(
                 callback_text = Some("Category not found".to_string());
               }
             }
-          }
         },
         "item" => {
-          if let Ok(item_id) = value.parse::<i64>() {
-            if let Some((chat_id, _)) = message_ctx {
-              if !send_item(&bot, &ctx, chat_id, item_id, Some(user_id)).await? {
+          if let Ok(item_id) = value.parse::<i64>()
+            && let Some((chat_id, _)) = message_ctx
+              && !send_item(&bot, &ctx, chat_id, item_id, Some(user_id)).await? {
                 callback_text = Some("Item not found".to_string());
               }
-            }
-          }
         },
         "back" => {
-          if value == "categories" {
-            if let Some((chat_id, message_id)) = message_ctx {
-              update_categories_menu(&bot, &ctx, chat_id, message_id).await?;
+          if value == "categories"
+            && let Some((chat_id, message_id)) = message_ctx {
+              show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
             }
-          }
         },
         "bid" => {
           if let Ok(item_id) = value.parse::<i64>() {
@@ -504,8 +670,8 @@ async fn handle_callback_query(
           }
         },
         "fav" => {
-          if let Some((action, item_str)) = value.split_once(':') {
-            if let Ok(item_id) = item_str.parse::<i64>() {
+          if let Some((action, item_str)) = value.split_once(':')
+            && let Ok(item_id) = item_str.parse::<i64>() {
               match action {
                 "add" => {
                   ctx.db().add_favorite(user_id, item_id).await?;
@@ -527,39 +693,21 @@ async fn handle_callback_query(
                   .edit_message_reply_markup(chat_id, message_id)
                   .reply_markup(keyboard)
                   .await
-                {
-                  if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
                     return Err(err.into());
                   }
-                }
               }
             }
-          }
         },
         _ => {},
       }
     }
-  }
 
   if let Some(text) = callback_text {
     bot.answer_callback_query(query.id).text(text).await?;
   } else {
     bot.answer_callback_query(query.id).await?;
   }
-  Ok(())
-}
-
-async fn send_categories(bot: &Bot, ctx: &SharedContext, chat: ChatId) -> HandlerResult {
-  let categories = ctx.db().list_categories().await?;
-  if categories.is_empty() {
-    bot.send_message(chat, "No categories yet. Check back soon.").await?;
-    return Ok(());
-  }
-  let keyboard = build_categories_keyboard(&categories);
-  bot
-    .send_message(chat, "Choose a category:")
-    .reply_markup(keyboard)
-    .await?;
   Ok(())
 }
 
@@ -573,22 +721,20 @@ async fn update_categories_menu(
   if categories.is_empty() {
     let request = bot
       .edit_message_text(chat, message_id, "No categories yet. Check back soon.")
-      .reply_markup(InlineKeyboardMarkup::default());
-    if let Err(err) = request.await {
-      if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+      .reply_markup(main_menu_only_keyboard());
+    if let Err(err) = request.await
+      && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
         return Err(err.into());
       }
-    }
   } else {
     let keyboard = build_categories_keyboard(&categories);
     let request = bot
       .edit_message_text(chat, message_id, "Choose a category:")
       .reply_markup(keyboard);
-    if let Err(err) = request.await {
-      if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+    if let Err(err) = request.await
+      && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
         return Err(err.into());
       }
-    }
   }
   Ok(())
 }
@@ -609,26 +755,30 @@ async fn show_category_items_menu(
   };
   let keyboard = build_items_keyboard(&items);
   let request = bot.edit_message_text(chat, message_id, text).reply_markup(keyboard);
-  if let Err(err) = request.await {
-    if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+  if let Err(err) = request.await
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
       return Err(err.into());
     }
-  }
   Ok(())
 }
 
 fn build_categories_keyboard(categories: &[CategoryRow]) -> InlineKeyboardMarkup {
-  InlineKeyboardMarkup::new(
-    categories
-      .chunks(2)
-      .map(|row| {
-        row
-          .iter()
-          .map(|category| InlineKeyboardButton::callback(category.name.clone(), format!("cat:{}", category.id)))
-          .collect::<Vec<_>>()
-      })
-      .collect::<Vec<_>>(),
-  )
+  let mut rows = categories
+    .chunks(2)
+    .map(|row| {
+      row
+        .iter()
+        .map(|category| InlineKeyboardButton::callback(category.name.clone(), format!("cat:{}", category.id)))
+        .collect::<Vec<_>>()
+    })
+    .collect::<Vec<_>>();
+
+  rows.push(vec![InlineKeyboardButton::callback(
+    "< Main menu",
+    "menu:root".to_string(),
+  )]);
+
+  InlineKeyboardMarkup::new(rows)
 }
 
 fn build_items_keyboard(items: &[ItemRow]) -> InlineKeyboardMarkup {
@@ -639,10 +789,10 @@ fn build_items_keyboard(items: &[ItemRow]) -> InlineKeyboardMarkup {
       format!("item:{}", item.id),
     )]);
   }
-  rows.push(vec![InlineKeyboardButton::callback(
-    "< Back".to_string(),
-    "back:categories".to_string(),
-  )]);
+  rows.push(vec![
+    InlineKeyboardButton::callback("< Categories".to_string(), "back:categories".to_string()),
+    InlineKeyboardButton::callback("< Main menu".to_string(), "menu:root".to_string()),
+  ]);
   InlineKeyboardMarkup::new(rows)
 }
 
@@ -717,12 +867,11 @@ fn render_item_message(item: &ItemRow, best: Option<i64>, viewer: Option<&ItemVi
 
   let mut text = format!("*{}* — *{}*", escaped_id, escaped_title);
 
-  if let Some(description) = item.description.as_deref() {
-    if !description.trim().is_empty() {
+  if let Some(description) = item.description.as_deref()
+    && !description.trim().is_empty() {
       let escaped_description = markdown::escape(description);
       text.push_str(&format!("\n\n{}", escaped_description));
     }
-  }
 
   text.push_str(&format!("\n\nStart: {}", escaped_start));
 
@@ -786,14 +935,6 @@ async fn notify_seller(bot: &Bot, item: &ItemRow, user: &User, amount_cents: i64
     )
     .await?;
   Ok(())
-}
-
-async fn ensure_admin(ctx: &SharedContext, user_id: i64, chat: ChatId, bot: &Bot) -> Result<bool> {
-  if ctx.is_admin(user_id) {
-    return Ok(true);
-  }
-  bot.send_message(chat, "This command is restricted to admins.").await?;
-  Ok(false)
 }
 
 async fn ensure_category(ctx: &SharedContext, name: &str) -> Result<(CategoryRow, bool)> {

@@ -9,6 +9,12 @@ pub enum ConversationState {
   Idle,
   AddItem(AddItemDraft),
   PlaceBid(BidDraft),
+  AddCategory {
+    admin_tg_id: i64,
+  },
+  CloseItem {
+    admin_tg_id: i64,
+  },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
