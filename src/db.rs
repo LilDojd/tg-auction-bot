@@ -325,6 +325,22 @@ impl Db {
   }
 
   #[instrument(skip(self))]
+  pub async fn delete_item(&self, item_id: i64) -> Result<bool> {
+    let result = sqlx::query!(r#"DELETE FROM items WHERE id = $1"#, item_id)
+      .execute(&self.pool)
+      .await?;
+    Ok(result.rows_affected() > 0)
+  }
+
+  #[instrument(skip(self))]
+  pub async fn delete_category(&self, category_id: i64) -> Result<bool> {
+    let result = sqlx::query!(r#"DELETE FROM categories WHERE id = $1"#, category_id)
+      .execute(&self.pool)
+      .await?;
+    Ok(result.rows_affected() > 0)
+  }
+
+  #[instrument(skip(self))]
   pub async fn add_favorite(&self, user_id: i64, item_id: i64) -> Result<()> {
     sqlx::query(
       r#"

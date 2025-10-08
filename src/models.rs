@@ -5,6 +5,7 @@ use serde::Serialize;
 use teloxide::types::FileId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct UserRow {
   pub id: i64, // tg id
   pub username: Option<String>,
@@ -33,6 +34,7 @@ pub struct ItemRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct BidRow {
   pub id: i64,
   pub item_id: i64,

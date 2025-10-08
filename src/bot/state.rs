@@ -15,6 +15,12 @@ pub enum ConversationState {
   CloseItem {
     admin_tg_id: i64,
   },
+  RemoveItem {
+    admin_tg_id: i64,
+  },
+  RemoveCategory {
+    admin_tg_id: i64,
+  },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

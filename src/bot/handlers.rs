@@ -55,6 +55,8 @@ pub fn build_schema() -> UpdateHandler<anyhow::Error> {
     .branch(dptree::case![ConversationState::PlaceBid(draft)].endpoint(handle_bid_message))
     .branch(dptree::case![ConversationState::AddCategory { admin_tg_id }].endpoint(handle_add_category_message))
     .branch(dptree::case![ConversationState::CloseItem { admin_tg_id }].endpoint(handle_close_item_message))
+    .branch(dptree::case![ConversationState::RemoveItem { admin_tg_id }].endpoint(handle_remove_item_message))
+    .branch(dptree::case![ConversationState::RemoveCategory { admin_tg_id }].endpoint(handle_remove_category_message))
     .branch(dptree::endpoint(handle_idle_text));
 
   let callback_handler = Update::filter_callback_query()
@@ -149,6 +151,10 @@ fn admin_menu_keyboard() -> InlineKeyboardMarkup {
     vec![
       InlineKeyboardButton::callback("🆕 Add category", "admin:add_category".to_string()),
       InlineKeyboardButton::callback("📦 Add item", "admin:add_item".to_string()),
+    ],
+    vec![
+      InlineKeyboardButton::callback("🗑 Remove item", "admin:remove_item".to_string()),
+      InlineKeyboardButton::callback("🗑 Remove category", "admin:remove_category".to_string()),
     ],
     vec![InlineKeyboardButton::callback(
       "🛑 Close item",
@@ -526,6 +532,118 @@ async fn handle_close_item_message(
   Ok(())
 }
 
+#[instrument(skip(bot, ctx, dialogue))]
+async fn handle_remove_item_message(
+  bot: Bot,
+  dialogue: BotDialogue,
+  ctx: SharedContext,
+  msg: Message,
+  admin_tg_id: i64,
+) -> HandlerResult {
+  let user = msg.from.as_ref().context("message missing sender")?;
+  if user.id.0 as i64 != admin_tg_id {
+    bot
+      .send_message(msg.chat.id, "Only the admin who started this action can respond.")
+      .await?;
+    return Ok(());
+  }
+
+  let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
+    bot
+      .send_message(msg.chat.id, "🗑 Send the item ID to remove or type cancel to stop.")
+      .await?;
+    return Ok(());
+  };
+
+  if raw_text.eq_ignore_ascii_case("cancel") {
+    dialogue.reset().await?;
+    bot.send_message(msg.chat.id, "❌ Item removal cancelled.").await?;
+    return Ok(());
+  }
+
+  let item_id: i64 = match raw_text.parse() {
+    Ok(value) => value,
+    Err(_) => {
+      bot.send_message(msg.chat.id, "🔢 Provide a numeric item ID.").await?;
+      return Ok(());
+    },
+  };
+
+  if ctx.db().delete_item(item_id).await? {
+    dialogue.reset().await?;
+    bot
+      .send_message(
+        msg.chat.id,
+        format!("🗑 Item #{item_id} removed. Related bids and favorites were deleted."),
+      )
+      .await?;
+  } else {
+    bot
+      .send_message(msg.chat.id, "❓ Item not found or already removed.")
+      .await?;
+  }
+
+  Ok(())
+}
+
+#[instrument(skip(bot, ctx, dialogue))]
+async fn handle_remove_category_message(
+  bot: Bot,
+  dialogue: BotDialogue,
+  ctx: SharedContext,
+  msg: Message,
+  admin_tg_id: i64,
+) -> HandlerResult {
+  let user = msg.from.as_ref().context("message missing sender")?;
+  if user.id.0 as i64 != admin_tg_id {
+    bot
+      .send_message(msg.chat.id, "Only the admin who started this action can respond.")
+      .await?;
+    return Ok(());
+  }
+
+  let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
+    bot
+      .send_message(
+        msg.chat.id,
+        "🗑 Send the category name to remove or type cancel to stop.",
+      )
+      .await?;
+    return Ok(());
+  };
+
+  if raw_text.eq_ignore_ascii_case("cancel") {
+    dialogue.reset().await?;
+    bot.send_message(msg.chat.id, "❌ Category removal cancelled.").await?;
+    return Ok(());
+  }
+
+  let Some(category) = ctx.db().find_category_by_name(raw_text).await? else {
+    bot.send_message(msg.chat.id, "❓ Category not found.").await?;
+    return Ok(());
+  };
+
+  let item_count = ctx.db().list_items_by_category(category.id).await?.len();
+  if ctx.db().delete_category(category.id).await? {
+    dialogue.reset().await?;
+    bot
+      .send_message(
+        msg.chat.id,
+        format!(
+          "🗑 Category '{}' removed. {} item(s) and related bids/favorites were deleted.",
+          category.name, item_count
+        ),
+      )
+      .await?;
+  } else {
+    bot
+      .send_message(msg.chat.id, "❓ Category not found or already removed.")
+      .await?;
+  }
+
+  Ok(())
+}
+
 #[instrument(skip(bot))]
 async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> HandlerResult {
   if matches!(state, ConversationState::Idle)
@@ -631,6 +749,37 @@ async fn handle_callback_query(
               }
               callback_text = Some("📦 Starting item creation.".to_string());
             },
+            "remove_item" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::RemoveItem { admin_tg_id: user_id })
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot
+                  .send_message(
+                    chat_id,
+                    "🗑 Send the item ID to remove (bids and favorites will also be removed). Type cancel to stop.",
+                  )
+                  .await?;
+              }
+              callback_text = Some("🗑 Awaiting item ID to remove.".to_string());
+            },
+            "remove_category" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::RemoveCategory { admin_tg_id: user_id })
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot
+                  .send_message(
+                    chat_id,
+                    "🗑 Send the category ID to remove (all items, bids, and favorites under it will be deleted). \
+                     Type cancel to stop.",
+                  )
+                  .await?;
+              }
+              callback_text = Some("🗑 Awaiting category ID to remove.".to_string());
+            },
             "close_item" => {
               dialogue.reset().await?;
               dialogue
@@ -677,11 +826,10 @@ async fn handle_callback_query(
               let request = bot
                 .edit_message_text(chat_id, message_id, "📷 All images shown.")
                 .reply_markup(InlineKeyboardMarkup::default());
-              if let Err(err) = request.await {
-                if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+              if let Err(err) = request.await
+                && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
                   return Err(err.into());
                 }
-              }
               callback_text = Some("📷 All images already shown.".to_string());
             } else {
               let next = send_item_images_chunk(&bot, chat_id, &images, offset, None).await?;
@@ -694,20 +842,18 @@ async fn handle_callback_query(
                 let request = bot
                   .edit_message_text(chat_id, message_id, format!("📷 {remaining} more photo(s) available."))
                   .reply_markup(keyboard);
-                if let Err(err) = request.await {
-                  if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                if let Err(err) = request.await
+                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
                     return Err(err.into());
                   }
-                }
               } else {
                 let request = bot
                   .edit_message_text(chat_id, message_id, "📷 All images shown.")
                   .reply_markup(InlineKeyboardMarkup::default());
-                if let Err(err) = request.await {
-                  if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                if let Err(err) = request.await
+                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
                     return Err(err.into());
                   }
-                }
               }
               callback_text = Some("📷 Sent more photos.".to_string());
             }
@@ -962,11 +1108,10 @@ async fn send_item_images_chunk(
   let mut media = Vec::new();
   for (index, file_id) in images[start .. end].iter().enumerate() {
     let mut photo = InputMediaPhoto::new(InputFile::file_id(file_id.clone()));
-    if let Some(text) = caption {
-      if start == 0 && index == 0 {
+    if let Some(text) = caption
+      && start == 0 && index == 0 {
         photo = photo.caption(text.to_string()).parse_mode(ParseMode::MarkdownV2);
       }
-    }
     media.push(InputMedia::Photo(photo));
   }
 
