@@ -827,9 +827,10 @@ async fn handle_callback_query(
                 .edit_message_text(chat_id, message_id, "📷 All images shown.")
                 .reply_markup(InlineKeyboardMarkup::default());
               if let Err(err) = request.await
-                && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-                  return Err(err.into());
-                }
+                && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+              {
+                return Err(err.into());
+              }
               callback_text = Some("📷 All images already shown.".to_string());
             } else {
               let next = send_item_images_chunk(&bot, chat_id, &images, offset, None).await?;
@@ -843,17 +844,19 @@ async fn handle_callback_query(
                   .edit_message_text(chat_id, message_id, format!("📷 {remaining} more photo(s) available."))
                   .reply_markup(keyboard);
                 if let Err(err) = request.await
-                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-                    return Err(err.into());
-                  }
+                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+                {
+                  return Err(err.into());
+                }
               } else {
                 let request = bot
                   .edit_message_text(chat_id, message_id, "📷 All images shown.")
                   .reply_markup(InlineKeyboardMarkup::default());
                 if let Err(err) = request.await
-                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-                    return Err(err.into());
-                  }
+                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+                {
+                  return Err(err.into());
+                }
               }
               callback_text = Some("📷 Sent more photos.".to_string());
             }
@@ -980,7 +983,7 @@ async fn show_category_items_menu(
   } else {
     format!("🗂️ Category: {category_name}\n🛍️ Select an item:")
   };
-  let keyboard = build_items_keyboard(&items);
+  let keyboard = build_items_keyboard(ctx, &items).await;
   let request = bot.edit_message_text(chat, message_id, text).reply_markup(keyboard);
   if let Err(err) = request.await
     && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
@@ -1009,18 +1012,35 @@ fn build_categories_keyboard(categories: &[CategoryRow]) -> InlineKeyboardMarkup
   InlineKeyboardMarkup::new(rows)
 }
 
-fn build_items_keyboard(items: &[ItemRow]) -> InlineKeyboardMarkup {
-  let mut rows = Vec::new();
-  for item in items {
-    rows.push(vec![InlineKeyboardButton::callback(
-      truncate_button_text(&item.title, 32),
-      format!("item:{}", item.id),
-    )]);
+async fn build_items_keyboard(ctx: &SharedContext, items: &[ItemRow]) -> InlineKeyboardMarkup {
+  use futures::future::join_all;
+
+  let bids = join_all(items.iter().map(|it| ctx.db().best_bid_for_item(it.id))).await;
+
+  let mut enriched: Vec<(&ItemRow, Option<i64>)> =
+    items.iter().zip(bids.into_iter().map(|r| r.unwrap_or(None))).collect();
+
+  enriched.sort_by_key(|(it, _best)| !it.is_open);
+
+  let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+  for (item, best) in enriched {
+    let price_cents = best.unwrap_or(item.start_price);
+    let mut label = format!(
+      "{}{} — {}",
+      if item.is_open { "" } else { "🔴 " },
+      format_cents(price_cents),
+      &item.title
+    );
+    label = truncate_button_text(&label, 48);
+
+    rows.push(vec![InlineKeyboardButton::callback(label, format!("item:{}", item.id))]);
   }
+
   rows.push(vec![
     InlineKeyboardButton::callback("⬅️ Categories".to_string(), "back:categories".to_string()),
     InlineKeyboardButton::callback("⬅️ Main menu".to_string(), "menu:root".to_string()),
   ]);
+
   InlineKeyboardMarkup::new(rows)
 }
 
@@ -1109,9 +1129,11 @@ async fn send_item_images_chunk(
   for (index, file_id) in images[start .. end].iter().enumerate() {
     let mut photo = InputMediaPhoto::new(InputFile::file_id(file_id.clone()));
     if let Some(text) = caption
-      && start == 0 && index == 0 {
-        photo = photo.caption(text.to_string()).parse_mode(ParseMode::MarkdownV2);
-      }
+      && start == 0
+      && index == 0
+    {
+      photo = photo.caption(text.to_string()).parse_mode(ParseMode::MarkdownV2);
+    }
     media.push(InputMedia::Photo(photo));
   }
 
