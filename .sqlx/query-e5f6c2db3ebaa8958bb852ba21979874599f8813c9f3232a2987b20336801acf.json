@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id)\n      VALUES ($1, $2, $3, $4, $5, $6)\n      RETURNING id\n      ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e5f6c2db3ebaa8958bb852ba21979874599f8813c9f3232a2987b20336801acf"
+}

@@ -3,37 +3,44 @@
   ...
 }:
 {
-    languages.rust = {
-      enable = true;
-      channel = "nightly";
-      mold.enable = if pkgs.stdenv.isLinux then true else false;
+  env.DATABASE_URL = "postgresql://localhost:5432/postgres";
+  env.SQLX_OFFLINE = true;
 
-      components = [
-        "rustc"
-        "cargo"
-        "clippy"
-        "rustfmt"
-        "rust-analyzer"
-      ];
-    };
+  languages.rust = {
+    enable = true;
+    channel = "nightly";
+    mold.enable = if pkgs.stdenv.isLinux then true else false;
 
-    dotenv.enable = true;
-    dotenv.filename = [
-      ".env"
+    components = [
+      "rustc"
+      "cargo"
+      "clippy"
+      "rustfmt"
+      "rust-analyzer"
     ];
+  };
+
+  dotenv.enable = true;
+  dotenv.filename = [
+    ".env"
+  ];
 
   services = {
-    postgres.enable = true;
+    postgres = {
+      enable = true;
+      listen_addresses = "*";
+    };
   };
-    packages = [
-      pkgs.git
-      pkgs.basedpyright
-      pkgs.cargo-nextest
-      pkgs.cargo-expand
-      pkgs.cargo-edit
-      pkgs.sqlx-cli
-      pkgs.cargo-machete
-      pkgs.cargo-deny
-      pkgs.cargo-autoinherit
-    ];
+  packages = [
+    pkgs.git
+    pkgs.basedpyright
+    pkgs.cargo-nextest
+    pkgs.cargo-expand
+    pkgs.cargo-edit
+    pkgs.sqlx-cli
+    pkgs.cargo-machete
+    pkgs.cargo-deny
+    pkgs.cargo-autoinherit
+    pkgs.openssl
+  ];
 }

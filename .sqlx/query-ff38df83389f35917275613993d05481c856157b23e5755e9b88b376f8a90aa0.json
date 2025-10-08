@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      SELECT\n        id,\n        seller_tg_id,\n        category_id,\n        title,\n        description,\n        start_price,\n        image_file_id,\n        is_open,\n        created_at\n      FROM items\n      WHERE id = $1\n      ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "seller_tg_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "category_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "start_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "image_file_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_open",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ff38df83389f35917275613993d05481c856157b23e5755e9b88b376f8a90aa0"
+}
