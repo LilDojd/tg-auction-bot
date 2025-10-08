@@ -487,6 +487,55 @@ async fn handle_add_category_message(
   Ok(())
 }
 
+fn build_category_picker_keyboard(categories: &[CategoryRow]) -> InlineKeyboardMarkup {
+  let mut rows = Vec::new();
+
+  for chunk in categories.chunks(2) {
+    rows.push(
+      chunk
+        .iter()
+        .map(|c| InlineKeyboardButton::callback(c.name.clone(), format!("pickcat:{}", c.id)))
+        .collect::<Vec<_>>(),
+    );
+  }
+
+  // footer
+  let mut footer = vec![InlineKeyboardButton::callback(
+    "➕ New category",
+    "pickcat:new".to_string(),
+  )];
+
+  footer.push(InlineKeyboardButton::callback("⬅️ Main menu", "menu:root".to_string()));
+
+  rows.push(footer);
+  InlineKeyboardMarkup::new(rows)
+}
+
+#[instrument(skip(bot, ctx))]
+async fn send_category_picker_message(bot: &Bot, ctx: &SharedContext, chat: ChatId) -> HandlerResult {
+  let categories = ctx.db().list_categories().await?;
+  if categories.is_empty() {
+    bot
+      .send_message(
+        chat,
+        "🗂️ No categories yet.\nSend a new category name, or /cancel to stop.",
+      )
+      .await?;
+  } else {
+    let kb = build_category_picker_keyboard(&categories);
+    let txt = format!(
+      "🗂️ Choose a category \\(or tap {}\\):",
+      teloxide::utils::markdown::bold("➕ New category")
+    );
+    bot
+      .send_message(chat, txt)
+      .parse_mode(ParseMode::MarkdownV2)
+      .reply_markup(kb)
+      .await?;
+  }
+  Ok(())
+}
+
 #[instrument(skip(bot, ctx, dialogue))]
 async fn handle_close_item_message(
   bot: Bot,
@@ -739,13 +788,8 @@ async fn handle_callback_query(
                 .update(ConversationState::AddItem(AddItemDraft::new(user_id, None)))
                 .await?;
               if let Some((chat_id, _)) = message_ctx {
-                bot
-                  .send_message(
-                    chat_id,
-                    "🗂️ Enter category name (existing or new). You can send a photo at any step and it will be \
-                     attached.",
-                  )
-                  .await?;
+                // show picker
+                send_category_picker_message(&bot, &ctx, chat_id).await?;
               }
               callback_text = Some("📦 Starting item creation.".to_string());
             },
@@ -791,6 +835,49 @@ async fn handle_callback_query(
               callback_text = Some("🛑 Awaiting item ID.".to_string());
             },
             _ => {},
+          }
+        }
+      },
+      "pickcat" => {
+        if let Some((chat_id, _message_id)) = message_ctx {
+          match value {
+            "new" => {
+              let state = dialogue.get().await?;
+              if !matches!(state, Some(ConversationState::AddItem(_))) {
+                dialogue
+                  .update(ConversationState::AddItem(AddItemDraft::new(user_id, None)))
+                  .await?;
+              }
+              bot
+                .send_message(chat_id, "🆕 Send the new category name (or type cancel).")
+                .await?;
+              callback_text = Some("🆕 Waiting for category name.".to_string());
+            },
+            id_str => {
+              if let Ok(category_id) = id_str.parse::<i64>() {
+                let categories = ctx.db().list_categories().await?;
+                if let Some(category) = categories.into_iter().find(|c| c.id == category_id) {
+                  if let Some(ConversationState::AddItem(mut draft)) = dialogue.get().await? {
+                    draft.category_id = Some(category.id);
+                    draft.category_name = Some(category.name);
+                    draft.stage = DraftStage::Title;
+                    dialogue.update(ConversationState::AddItem(draft)).await?;
+                    bot.send_message(chat_id, "📝 Enter item title:").await?;
+                    callback_text = Some("🗂️ Category selected.".to_string());
+                  } else {
+                    let mut draft = AddItemDraft::new(user_id, None);
+                    draft.category_id = Some(category.id);
+                    draft.category_name = Some(category.name);
+                    draft.stage = DraftStage::Title;
+                    dialogue.update(ConversationState::AddItem(draft)).await?;
+                    bot.send_message(chat_id, "📝 Enter item title:").await?;
+                    callback_text = Some("🗂️ Category selected.".to_string());
+                  }
+                } else {
+                  callback_text = Some("❓ Category not found".to_string());
+                }
+              }
+            },
           }
         }
       },
