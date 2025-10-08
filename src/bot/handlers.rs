@@ -41,7 +41,7 @@ use crate::util::parse_money_to_cents;
 type SharedContext = Arc<AppContext>;
 type BotDialogue = Dialogue<ConversationState, DialogueStorage>;
 
-const MAIN_MENU_TEXT: &str = "What would you like to do?";
+const MAIN_MENU_TEXT: &str = "🤖 What would you like to do?";
 
 pub fn build_schema() -> UpdateHandler<anyhow::Error> {
   let message_handler = Update::filter_message()
@@ -107,31 +107,32 @@ async fn show_main_menu(
     .edit_message_text(chat, message_id, MAIN_MENU_TEXT)
     .reply_markup(keyboard);
   if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-      return Err(err.into());
-    }
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+  {
+    return Err(err.into());
+  }
   Ok(())
 }
 
 fn main_menu_keyboard(ctx: &SharedContext, user_id: i64) -> InlineKeyboardMarkup {
   let mut rows = vec![vec![InlineKeyboardButton::callback(
-    "Catalogue",
+    "🗂️ Catalogue",
     "menu:catalogue".to_string(),
   )]];
 
   rows.push(vec![
-    InlineKeyboardButton::callback("My bids", "menu:my_bids".to_string()),
-    InlineKeyboardButton::callback("My favorites", "menu:favorites".to_string()),
+    InlineKeyboardButton::callback("🪙 My bids", "menu:my_bids".to_string()),
+    InlineKeyboardButton::callback("⭐ My favorites", "menu:favorites".to_string()),
   ]);
 
   rows.push(vec![InlineKeyboardButton::callback(
-    "My settings",
+    "⚙️ My settings",
     "menu:settings".to_string(),
   )]);
 
   if ctx.is_admin(user_id) {
     rows.push(vec![InlineKeyboardButton::callback(
-      "Admin panel",
+      "🛡️ Admin panel",
       "menu:admin".to_string(),
     )]);
   }
@@ -142,20 +143,20 @@ fn main_menu_keyboard(ctx: &SharedContext, user_id: i64) -> InlineKeyboardMarkup
 fn admin_menu_keyboard() -> InlineKeyboardMarkup {
   InlineKeyboardMarkup::new(vec![
     vec![
-      InlineKeyboardButton::callback("Add category", "admin:add_category".to_string()),
-      InlineKeyboardButton::callback("Add item", "admin:add_item".to_string()),
+      InlineKeyboardButton::callback("🆕 Add category", "admin:add_category".to_string()),
+      InlineKeyboardButton::callback("📦 Add item", "admin:add_item".to_string()),
     ],
     vec![InlineKeyboardButton::callback(
-      "Close item",
+      "🛑 Close item",
       "admin:close_item".to_string(),
     )],
-    vec![InlineKeyboardButton::callback("< Main menu", "menu:root".to_string())],
+    vec![InlineKeyboardButton::callback("⬅️ Main menu", "menu:root".to_string())],
   ])
 }
 
 fn main_menu_only_keyboard() -> InlineKeyboardMarkup {
   InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-    "< Main menu",
+    "⬅️ Main menu",
     "menu:root".to_string(),
   )]])
 }
@@ -172,24 +173,26 @@ async fn show_catalogue_menu(bot: &Bot, ctx: &SharedContext, chat: ChatId, messa
 #[instrument(skip(bot))]
 async fn show_admin_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> HandlerResult {
   let request = bot
-    .edit_message_text(chat, message_id, "Admin panel\n\nChoose an action:")
+    .edit_message_text(chat, message_id, "🛡️ Admin panel\n\nChoose an action:")
     .reply_markup(admin_menu_keyboard());
   if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-      return Err(err.into());
-    }
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+  {
+    return Err(err.into());
+  }
   Ok(())
 }
 
 #[instrument(skip(bot))]
 async fn show_settings_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> HandlerResult {
   let request = bot
-    .edit_message_text(chat, message_id, "Settings\n\nNothing to configure yet. Stay tuned!")
+    .edit_message_text(chat, message_id, "⚙️ Settings\n\nNothing to configure yet. Stay tuned!")
     .reply_markup(settings_menu_keyboard());
   if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-      return Err(err.into());
-    }
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+  {
+    return Err(err.into());
+  }
   Ok(())
 }
 
@@ -198,12 +201,12 @@ async fn send_favorites_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_
   let favorites = ctx.db().list_favorites(user_id).await?;
 
   if favorites.is_empty() {
-    bot.send_message(chat, "No favorites yet.").await?;
+    bot.send_message(chat, "⭐ No favorites yet.").await?;
     return Ok(());
   }
 
   bot
-    .send_message(chat, format!("Favorites ({}):", favorites.len()))
+    .send_message(chat, format!("⭐ Favorites ({}):", favorites.len()))
     .await?;
 
   for item in favorites {
@@ -220,12 +223,12 @@ async fn send_my_bids_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id
   let bids = ctx.db().list_user_bid_items(user_id).await?;
 
   if bids.is_empty() {
-    bot.send_message(chat, "You have not placed any bids yet.").await?;
+    bot.send_message(chat, "🪙 You have not placed any bids yet.").await?;
     return Ok(());
   }
 
   bot
-    .send_message(chat, format!("Active bids ({} items):", bids.len()))
+    .send_message(chat, format!("🪙 Active bids ({} items):", bids.len()))
     .await?;
 
   for (item, _) in bids {
@@ -257,24 +260,25 @@ async fn handle_additem_message(
   }
 
   if draft.image_file_id.is_none()
-    && let Some(photo) = msg.photo().and_then(|photos| photos.last()) {
-      draft.image_file_id = Some(photo.file.id.clone());
-      dialogue.update(ConversationState::AddItem(draft.clone())).await?;
-    }
+    && let Some(photo) = msg.photo().and_then(|photos| photos.last())
+  {
+    draft.image_file_id = Some(photo.file.id.clone());
+    dialogue.update(ConversationState::AddItem(draft.clone())).await?;
+  }
 
   let text = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty());
   let chat_id = msg.chat.id;
 
   if matches!(text, Some(value) if value.eq_ignore_ascii_case("cancel")) {
     dialogue.reset().await?;
-    bot.send_message(chat_id, "Item creation cancelled.").await?;
+    bot.send_message(chat_id, "❌ Item creation cancelled.").await?;
     return Ok(());
   }
 
   match draft.stage {
     DraftStage::Category => {
       let Some(name) = text else {
-        bot.send_message(chat_id, "Please provide a category name.").await?;
+        bot.send_message(chat_id, "🗂️ Please provide a category name.").await?;
         return Ok(());
       };
       let (category, _) = ensure_category(&ctx, name).await?;
@@ -282,17 +286,19 @@ async fn handle_additem_message(
       draft.category_name = Some(category.name);
       draft.stage = DraftStage::Title;
       dialogue.update(ConversationState::AddItem(draft)).await?;
-      bot.send_message(chat_id, "Enter item title:").await?;
+      bot.send_message(chat_id, "📝 Enter item title:").await?;
     },
     DraftStage::Title => {
       let Some(title) = text else {
-        bot.send_message(chat_id, "Please provide a title.").await?;
+        bot.send_message(chat_id, "📝 Please provide a title.").await?;
         return Ok(());
       };
       draft.title = Some(title.to_string());
       draft.stage = DraftStage::Description;
       dialogue.update(ConversationState::AddItem(draft)).await?;
-      bot.send_message(chat_id, "Enter description (or '-' to skip):").await?;
+      bot
+        .send_message(chat_id, "🧾 Enter description (or '-' to skip):")
+        .await?;
     },
     DraftStage::Description => {
       let description = text.map(|value| value.to_string());
@@ -303,12 +309,12 @@ async fn handle_additem_message(
       draft.description = value;
       draft.stage = DraftStage::StartPrice;
       dialogue.update(ConversationState::AddItem(draft)).await?;
-      bot.send_message(chat_id, "Enter start price (e.g., 50.00):").await?;
+      bot.send_message(chat_id, "💰 Enter start price (e.g., 50.00):").await?;
     },
     DraftStage::StartPrice => {
       let Some(amount_text) = text else {
         bot
-          .send_message(chat_id, "Provide a start price in 0.00 format.")
+          .send_message(chat_id, "💰 Provide a start price in 0.00 format.")
           .await?;
         return Ok(());
       };
@@ -338,7 +344,7 @@ async fn handle_additem_message(
           }
         },
         Err(err) => {
-          bot.send_message(chat_id, format!("Invalid price: {err}")).await?;
+          bot.send_message(chat_id, format!("⚠️ Invalid price: {err}")).await?;
         },
       }
     },
@@ -432,14 +438,14 @@ async fn handle_add_category_message(
 
   let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
     bot
-      .send_message(msg.chat.id, "Send the new category name or type cancel to stop.")
+      .send_message(msg.chat.id, "🆕 Send the new category name or type cancel to stop.")
       .await?;
     return Ok(());
   };
 
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
-    bot.send_message(msg.chat.id, "Category creation cancelled.").await?;
+    bot.send_message(msg.chat.id, "❌ Category creation cancelled.").await?;
     return Ok(());
   }
 
@@ -447,9 +453,9 @@ async fn handle_add_category_message(
   dialogue.reset().await?;
 
   let response = if existing {
-    format!("Category already exists: {} (#{})", category.name, category.id)
+    format!("⚠️ Category already exists: {} (#{})", category.name, category.id)
   } else {
-    format!("Category created: {} (#{})", category.name, category.id)
+    format!("✅ Category created: {} (#{})", category.name, category.id)
   };
 
   bot.send_message(msg.chat.id, response).await?;
@@ -474,21 +480,21 @@ async fn handle_close_item_message(
 
   let Some(raw_text) = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty()) else {
     bot
-      .send_message(msg.chat.id, "Send the item ID to close or type cancel to stop.")
+      .send_message(msg.chat.id, "🛑 Send the item ID to close or type cancel to stop.")
       .await?;
     return Ok(());
   };
 
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
-    bot.send_message(msg.chat.id, "Item closure cancelled.").await?;
+    bot.send_message(msg.chat.id, "❌ Item closure cancelled.").await?;
     return Ok(());
   }
 
   let item_id: i64 = match raw_text.parse() {
     Ok(value) => value,
     Err(_) => {
-      bot.send_message(msg.chat.id, "Provide a numeric item ID.").await?;
+      bot.send_message(msg.chat.id, "🔢 Provide a numeric item ID.").await?;
       return Ok(());
     },
   };
@@ -496,7 +502,7 @@ async fn handle_close_item_message(
   ctx.db().close_item(item_id).await?;
   dialogue.reset().await?;
   bot
-    .send_message(msg.chat.id, format!("Item #{item_id} closed."))
+    .send_message(msg.chat.id, format!("🛑 Item #{item_id} closed."))
     .await?;
   Ok(())
 }
@@ -529,179 +535,184 @@ async fn handle_callback_query(
   let message_ctx = query.message.as_ref().map(|message| (message.chat().id, message.id()));
 
   if let Some(data) = query.data.as_deref()
-    && let Some((prefix, value)) = data.split_once(':') {
-      match prefix {
-        "menu" => match value {
-          "root" => {
-            dialogue.reset().await?;
-            if let Some((chat_id, message_id)) = message_ctx {
-              show_main_menu(&bot, &ctx, chat_id, message_id, user_id).await?;
-            }
-          },
-          "catalogue" => {
-            dialogue.reset().await?;
-            if let Some((chat_id, message_id)) = message_ctx {
-              show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
-            }
-          },
-          "favorites" => {
-            if let Some((chat_id, _)) = message_ctx {
-              send_favorites_list(&bot, &ctx, chat_id, user_id).await?;
-              callback_text = Some("Shared your favorites.".to_string());
-            }
-          },
-          "my_bids" => {
-            if let Some((chat_id, _)) = message_ctx {
-              send_my_bids_list(&bot, &ctx, chat_id, user_id).await?;
-              callback_text = Some("Shared your bids.".to_string());
-            }
-          },
-          "settings" => {
-            dialogue.reset().await?;
-            if let Some((chat_id, message_id)) = message_ctx {
-              show_settings_menu(&bot, chat_id, message_id).await?;
-            }
-          },
-          "admin" => {
-            if ctx.is_admin(user_id) {
-              dialogue.reset().await?;
-              if let Some((chat_id, message_id)) = message_ctx {
-                show_admin_menu(&bot, chat_id, message_id).await?;
-              }
-            } else {
-              callback_text = Some("Admins only.".to_string());
-            }
-          },
-          _ => {},
+    && let Some((prefix, value)) = data.split_once(':')
+  {
+    match prefix {
+      "menu" => match value {
+        "root" => {
+          dialogue.reset().await?;
+          if let Some((chat_id, message_id)) = message_ctx {
+            show_main_menu(&bot, &ctx, chat_id, message_id, user_id).await?;
+          }
+        },
+        "catalogue" => {
+          dialogue.reset().await?;
+          if let Some((chat_id, message_id)) = message_ctx {
+            show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
+          }
+        },
+        "favorites" => {
+          if let Some((chat_id, _)) = message_ctx {
+            send_favorites_list(&bot, &ctx, chat_id, user_id).await?;
+            callback_text = Some("⭐ Sent your favorites.".to_string());
+          }
+        },
+        "my_bids" => {
+          if let Some((chat_id, _)) = message_ctx {
+            send_my_bids_list(&bot, &ctx, chat_id, user_id).await?;
+            callback_text = Some("🪙 Sent your bids.".to_string());
+          }
+        },
+        "settings" => {
+          dialogue.reset().await?;
+          if let Some((chat_id, message_id)) = message_ctx {
+            show_settings_menu(&bot, chat_id, message_id).await?;
+          }
         },
         "admin" => {
-          if !ctx.is_admin(user_id) {
-            callback_text = Some("Admins only.".to_string());
+          if ctx.is_admin(user_id) {
+            dialogue.reset().await?;
+            if let Some((chat_id, message_id)) = message_ctx {
+              show_admin_menu(&bot, chat_id, message_id).await?;
+            }
           } else {
-            match value {
-              "add_category" => {
-                dialogue.reset().await?;
-                dialogue
-                  .update(ConversationState::AddCategory { admin_tg_id: user_id })
-                  .await?;
-                if let Some((chat_id, _)) = message_ctx {
-                  bot.send_message(chat_id, "Send the new category name:").await?;
-                }
-                callback_text = Some("Waiting for category name.".to_string());
-              },
-              "add_item" => {
-                dialogue.reset().await?;
-                dialogue
-                  .update(ConversationState::AddItem(AddItemDraft::new(user_id, None)))
-                  .await?;
-                if let Some((chat_id, _)) = message_ctx {
-                  bot
-                    .send_message(
-                      chat_id,
-                      "Enter category name (existing or new). You can send a photo at any step and it will be \
-                       attached.",
-                    )
-                    .await?;
-                }
-                callback_text = Some("Starting item creation.".to_string());
-              },
-              "close_item" => {
-                dialogue.reset().await?;
-                dialogue
-                  .update(ConversationState::CloseItem { admin_tg_id: user_id })
-                  .await?;
-                if let Some((chat_id, _)) = message_ctx {
-                  bot.send_message(chat_id, "Send the item ID to close:").await?;
-                }
-                callback_text = Some("Awaiting item ID.".to_string());
-              },
-              _ => {},
-            }
+            callback_text = Some("🛡️ Admins only.".to_string());
           }
-        },
-        "cat" => {
-          if let Ok(category_id) = value.parse::<i64>()
-            && let Some((chat_id, message_id)) = message_ctx {
-              let categories = ctx.db().list_categories().await?;
-              if let Some(category) = categories.into_iter().find(|c| c.id == category_id) {
-                show_category_items_menu(&bot, &ctx, chat_id, message_id, category.id, category.name.as_str())
-                  .await?;
-              } else {
-                callback_text = Some("Category not found".to_string());
-              }
-            }
-        },
-        "item" => {
-          if let Ok(item_id) = value.parse::<i64>()
-            && let Some((chat_id, _)) = message_ctx
-              && !send_item(&bot, &ctx, chat_id, item_id, Some(user_id)).await? {
-                callback_text = Some("Item not found".to_string());
-              }
-        },
-        "back" => {
-          if value == "categories"
-            && let Some((chat_id, message_id)) = message_ctx {
-              show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
-            }
-        },
-        "bid" => {
-          if let Ok(item_id) = value.parse::<i64>() {
-            match ctx.db().get_item(item_id).await? {
-              Some(item) if item.is_open => {
-                dialogue
-                  .update(ConversationState::PlaceBid(BidDraft {
-                    item_id,
-                    bidder_tg_id: user_id,
-                  }))
-                  .await?;
-                if let Some((chat_id, _)) = message_ctx {
-                  bot
-                    .send_message(chat_id, format!("Enter your bid for item #{item_id} in 0.00 format:"))
-                    .await?;
-                }
-              },
-              Some(_) => {
-                callback_text = Some("Auction is closed".to_string());
-              },
-              None => {
-                callback_text = Some("Item not found".to_string());
-              },
-            }
-          }
-        },
-        "fav" => {
-          if let Some((action, item_str)) = value.split_once(':')
-            && let Ok(item_id) = item_str.parse::<i64>() {
-              match action {
-                "add" => {
-                  ctx.db().add_favorite(user_id, item_id).await?;
-                  callback_text = Some("Added to favorites".to_string());
-                },
-                "remove" => {
-                  ctx.db().remove_favorite(user_id, item_id).await?;
-                  callback_text = Some("Removed from favorites".to_string());
-                },
-                _ => {},
-              }
-
-              if let Some((chat_id, message_id)) = message_ctx
-                && let Some(item) = ctx.db().get_item(item_id).await?
-              {
-                let viewer = build_item_viewer_context(&ctx, item_id, user_id).await?;
-                let keyboard = item_action_keyboard(item.id, item.is_open, Some(&viewer));
-                if let Err(err) = bot
-                  .edit_message_reply_markup(chat_id, message_id)
-                  .reply_markup(keyboard)
-                  .await
-                  && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-                    return Err(err.into());
-                  }
-              }
-            }
         },
         _ => {},
-      }
+      },
+      "admin" => {
+        if !ctx.is_admin(user_id) {
+          callback_text = Some("🛡️ Admins only.".to_string());
+        } else {
+          match value {
+            "add_category" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::AddCategory { admin_tg_id: user_id })
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot.send_message(chat_id, "🆕 Send the new category name:").await?;
+              }
+              callback_text = Some("🆕 Waiting for category name.".to_string());
+            },
+            "add_item" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::AddItem(AddItemDraft::new(user_id, None)))
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot
+                  .send_message(
+                    chat_id,
+                    "🗂️ Enter category name (existing or new). You can send a photo at any step and it will be \
+                     attached.",
+                  )
+                  .await?;
+              }
+              callback_text = Some("📦 Starting item creation.".to_string());
+            },
+            "close_item" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::CloseItem { admin_tg_id: user_id })
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot.send_message(chat_id, "🛑 Send the item ID to close:").await?;
+              }
+              callback_text = Some("🛑 Awaiting item ID.".to_string());
+            },
+            _ => {},
+          }
+        }
+      },
+      "cat" => {
+        if let Ok(category_id) = value.parse::<i64>()
+          && let Some((chat_id, message_id)) = message_ctx
+        {
+          let categories = ctx.db().list_categories().await?;
+          if let Some(category) = categories.into_iter().find(|c| c.id == category_id) {
+            show_category_items_menu(&bot, &ctx, chat_id, message_id, category.id, category.name.as_str()).await?;
+          } else {
+            callback_text = Some("❓ Category not found".to_string());
+          }
+        }
+      },
+      "item" => {
+        if let Ok(item_id) = value.parse::<i64>()
+          && let Some((chat_id, _)) = message_ctx
+          && !send_item(&bot, &ctx, chat_id, item_id, Some(user_id)).await?
+        {
+          callback_text = Some("❓ Item not found".to_string());
+        }
+      },
+      "back" => {
+        if value == "categories"
+          && let Some((chat_id, message_id)) = message_ctx
+        {
+          show_catalogue_menu(&bot, &ctx, chat_id, message_id).await?;
+        }
+      },
+      "bid" => {
+        if let Ok(item_id) = value.parse::<i64>() {
+          match ctx.db().get_item(item_id).await? {
+            Some(item) if item.is_open => {
+              dialogue
+                .update(ConversationState::PlaceBid(BidDraft {
+                  item_id,
+                  bidder_tg_id: user_id,
+                }))
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot
+                  .send_message(chat_id, format!("Enter your bid for item #{item_id} in 0.00 format:"))
+                  .await?;
+              }
+            },
+            Some(_) => {
+              callback_text = Some("🔒 Auction is closed".to_string());
+            },
+            None => {
+              callback_text = Some("❓ Item not found".to_string());
+            },
+          }
+        }
+      },
+      "fav" => {
+        if let Some((action, item_str)) = value.split_once(':')
+          && let Ok(item_id) = item_str.parse::<i64>()
+        {
+          match action {
+            "add" => {
+              ctx.db().add_favorite(user_id, item_id).await?;
+              callback_text = Some("⭐ Added to favorites".to_string());
+            },
+            "remove" => {
+              ctx.db().remove_favorite(user_id, item_id).await?;
+              callback_text = Some("❌ Removed from favorites".to_string());
+            },
+            _ => {},
+          }
+
+          if let Some((chat_id, message_id)) = message_ctx
+            && let Some(item) = ctx.db().get_item(item_id).await?
+          {
+            let viewer = build_item_viewer_context(&ctx, item_id, user_id).await?;
+            let keyboard = item_action_keyboard(item.id, item.is_open, Some(&viewer));
+            if let Err(err) = bot
+              .edit_message_reply_markup(chat_id, message_id)
+              .reply_markup(keyboard)
+              .await
+              && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+            {
+              return Err(err.into());
+            }
+          }
+        }
+      },
+      _ => {},
     }
+  }
 
   if let Some(text) = callback_text {
     bot.answer_callback_query(query.id).text(text).await?;
@@ -720,21 +731,23 @@ async fn update_categories_menu(
   let categories = ctx.db().list_categories().await?;
   if categories.is_empty() {
     let request = bot
-      .edit_message_text(chat, message_id, "No categories yet. Check back soon.")
+      .edit_message_text(chat, message_id, "🗂️ No categories yet. Check back soon.")
       .reply_markup(main_menu_only_keyboard());
     if let Err(err) = request.await
-      && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-        return Err(err.into());
-      }
+      && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+    {
+      return Err(err.into());
+    }
   } else {
     let keyboard = build_categories_keyboard(&categories);
     let request = bot
-      .edit_message_text(chat, message_id, "Choose a category:")
+      .edit_message_text(chat, message_id, "🗂️ Choose a category:")
       .reply_markup(keyboard);
     if let Err(err) = request.await
-      && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-        return Err(err.into());
-      }
+      && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+    {
+      return Err(err.into());
+    }
   }
   Ok(())
 }
@@ -749,16 +762,17 @@ async fn show_category_items_menu(
 ) -> HandlerResult {
   let items = ctx.db().list_items_by_category(category_id).await?;
   let text = if items.is_empty() {
-    format!("Category: {category_name}\nNo items in this category yet.")
+    format!("🗂️ Category: {category_name}\n📭 No items in this category yet.")
   } else {
-    format!("Category: {category_name}\nSelect an item:")
+    format!("🗂️ Category: {category_name}\n🛍️ Select an item:")
   };
   let keyboard = build_items_keyboard(&items);
   let request = bot.edit_message_text(chat, message_id, text).reply_markup(keyboard);
   if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
-      return Err(err.into());
-    }
+    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
+  {
+    return Err(err.into());
+  }
   Ok(())
 }
 
@@ -774,7 +788,7 @@ fn build_categories_keyboard(categories: &[CategoryRow]) -> InlineKeyboardMarkup
     .collect::<Vec<_>>();
 
   rows.push(vec![InlineKeyboardButton::callback(
-    "< Main menu",
+    "⬅️ Main menu",
     "menu:root".to_string(),
   )]);
 
@@ -790,8 +804,8 @@ fn build_items_keyboard(items: &[ItemRow]) -> InlineKeyboardMarkup {
     )]);
   }
   rows.push(vec![
-    InlineKeyboardButton::callback("< Categories".to_string(), "back:categories".to_string()),
-    InlineKeyboardButton::callback("< Main menu".to_string(), "menu:root".to_string()),
+    InlineKeyboardButton::callback("⬅️ Categories".to_string(), "back:categories".to_string()),
+    InlineKeyboardButton::callback("⬅️ Main menu".to_string(), "menu:root".to_string()),
   ]);
   InlineKeyboardMarkup::new(rows)
 }
@@ -865,47 +879,51 @@ fn render_item_message(item: &ItemRow, best: Option<i64>, viewer: Option<&ItemVi
   let escaped_title = markdown::escape(&item.title);
   let escaped_start = markdown::escape(&format_cents(item.start_price));
 
-  let mut text = format!("*{}* — *{}*", escaped_id, escaped_title);
+  let mut text = format!("🔨 *{}* — *{}*", escaped_id, escaped_title);
 
   if let Some(description) = item.description.as_deref()
-    && !description.trim().is_empty() {
-      let escaped_description = markdown::escape(description);
-      text.push_str(&format!("\n\n{}", escaped_description));
-    }
+    && !description.trim().is_empty()
+  {
+    let escaped_description = markdown::escape(description);
+    text.push_str(&format!("\n\n{}", escaped_description));
+  }
 
-  text.push_str(&format!("\n\nStart: {}", escaped_start));
+  text.push_str(&format!("\n\n💰 Start: {}", escaped_start));
 
   if let Some(best_bid) = best {
     let escaped_best = markdown::escape(&format_cents(best_bid));
-    text.push_str(&format!("\nCurrent best: {}", escaped_best));
+    text.push_str(&format!("\n🏆 Current best: {}", escaped_best));
   }
 
   if let Some(viewer_ctx) = viewer {
     if let Some(user_bid) = viewer_ctx.user_best_bid {
-      let line = markdown::escape(&format!("Your top bid: {}", format_cents(user_bid)));
+      let line = markdown::escape(&format!("🎯 Your top bid: {}", format_cents(user_bid)));
       text.push_str(&format!("\n{}", line));
     }
     if viewer_ctx.is_favorite {
-      let line = markdown::escape("Saved to favorites");
+      let line = markdown::escape("⭐ Saved to favorites");
       text.push_str(&format!("\n{}", line));
     }
   }
 
-  text.push_str(&format!("\nStatus: {}", if item.is_open { "OPEN" } else { "CLOSED" }));
+  text.push_str(&format!(
+    "\n📦 Status: {}",
+    if item.is_open { "OPEN" } else { "CLOSED" }
+  ));
   text
 }
 
 fn item_action_keyboard(item_id: i64, open: bool, viewer: Option<&ItemViewerContext>) -> InlineKeyboardMarkup {
   let mut row = Vec::new();
   if open {
-    row.push(InlineKeyboardButton::callback("Place bid", format!("bid:{item_id}")));
+    row.push(InlineKeyboardButton::callback("💸 Place bid", format!("bid:{item_id}")));
   }
 
   if let Some(viewer_ctx) = viewer {
     let (label, action) = if viewer_ctx.is_favorite {
-      ("Remove favorite", "fav:remove")
+      ("❌ Remove favorite", "fav:remove")
     } else {
-      ("Add favorite", "fav:add")
+      ("⭐ Add favorite", "fav:add")
     };
     row.push(InlineKeyboardButton::callback(
       label.to_string(),
