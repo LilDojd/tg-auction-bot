@@ -1,0 +1,7 @@
+fly.toml
+Dockerfile
+.dockerignore
+target
+.git
+.jj
+.env

@@ -1,4 +1,3 @@
-use crate::models::BidRow;
 use crate::models::CategoryRow;
 use crate::models::ItemRow;
 use anyhow::Result;
@@ -7,6 +6,7 @@ use sqlx::Postgres;
 use sqlx::Row;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
+use teloxide::types::FileId;
 use tracing::instrument;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -23,10 +23,12 @@ impl Db {
     Ok(Self { pool })
   }
 
+  #[allow(dead_code)]
   pub fn pool(&self) -> &Pool<Postgres> {
     &self.pool
   }
 
+  #[allow(dead_code)]
   #[instrument(skip(self))]
   pub async fn upsert_user(
     &self,
@@ -100,8 +102,9 @@ impl Db {
     title: &str,
     description: Option<&str>,
     start_price: i64,
-    image_file_id: Option<&str>,
+    image_file_ids: &[String],
   ) -> Result<i64> {
+    let cover_image = image_file_ids.first().map(|id| id.as_str());
     let id = sqlx::query_scalar!(
       r#"
       INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id)
@@ -113,10 +116,26 @@ impl Db {
       title,
       description,
       start_price,
-      image_file_id
+      cover_image
     )
     .fetch_one(&self.pool)
     .await?;
+
+    if !image_file_ids.is_empty() {
+      for (position, file_id) in image_file_ids.iter().enumerate() {
+        sqlx::query!(
+          r#"
+          INSERT INTO item_images (item_id, file_id, position)
+          VALUES ($1, $2, $3)
+          "#,
+          id,
+          file_id,
+          position as i32,
+        )
+        .execute(&self.pool)
+        .await?;
+      }
+    }
     Ok(id)
   }
 
@@ -195,6 +214,23 @@ impl Db {
   }
 
   #[instrument(skip(self))]
+  pub async fn list_item_images(&self, item_id: i64) -> Result<Vec<FileId>> {
+    let rows = sqlx::query!(
+      r#"
+      SELECT file_id
+      FROM item_images
+      WHERE item_id = $1
+      ORDER BY position ASC, id ASC
+      "#,
+      item_id
+    )
+    .fetch_all(&self.pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|row| row.file_id.into()).collect())
+  }
+
+  #[instrument(skip(self))]
   pub async fn best_bid_for_item(&self, item_id: i64) -> Result<Option<i64>> {
     let value = sqlx::query_scalar!(
       r#"SELECT amount FROM bids WHERE item_id = $1 ORDER BY amount DESC LIMIT 1"#,
@@ -232,33 +268,6 @@ impl Db {
     .fetch_one(&self.pool)
     .await?;
     Ok(id)
-  }
-
-  #[instrument(skip(self))]
-  pub async fn list_bids_for_item(&self, item_id: i64) -> Result<Vec<BidRow>> {
-    let rows = sqlx::query!(
-      r#"
-      SELECT id, item_id, bidder_tg_id, amount, created_at
-      FROM bids
-      WHERE item_id = $1
-      ORDER BY amount DESC
-      "#,
-      item_id
-    )
-    .fetch_all(&self.pool)
-    .await?;
-    Ok(
-      rows
-        .into_iter()
-        .map(|row| BidRow {
-          id: row.id,
-          item_id: row.item_id,
-          bidder_tg_id: row.bidder_tg_id,
-          amount: row.amount,
-          created_at: row.created_at,
-        })
-        .collect(),
-    )
   }
 
   #[instrument(skip(self))]

@@ -21,7 +21,7 @@ pub enum ConversationState {
 pub struct AddItemDraft {
   pub stage: DraftStage,
   pub seller_tg_id: i64,
-  pub image_file_id: Option<FileId>,
+  pub image_file_ids: Vec<FileId>,
   pub category_id: Option<i64>,
   pub category_name: Option<String>,
   pub title: Option<String>,
@@ -34,7 +34,7 @@ impl AddItemDraft {
     Self {
       stage: DraftStage::Category,
       seller_tg_id,
-      image_file_id,
+      image_file_ids: image_file_id.into_iter().collect(),
       category_id: None,
       category_name: None,
       title: None,
@@ -68,6 +68,6 @@ mod tests {
     let draft = AddItemDraft::new(1, None);
     assert_eq!(draft.stage, DraftStage::Category);
     assert_eq!(draft.seller_tg_id, 1);
-    assert!(draft.image_file_id.is_none());
+    assert!(draft.image_file_ids.is_empty());
   }
 }

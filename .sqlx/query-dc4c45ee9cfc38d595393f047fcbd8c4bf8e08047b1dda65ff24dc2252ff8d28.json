@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      SELECT file_id\n      FROM item_images\n      WHERE item_id = $1\n      ORDER BY position ASC, id ASC\n      ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "file_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dc4c45ee9cfc38d595393f047fcbd8c4bf8e08047b1dda65ff24dc2252ff8d28"
+}

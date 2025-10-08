@@ -11,9 +11,12 @@ use teloxide::dptree;
 use teloxide::prelude::*;
 use teloxide::types::CallbackQuery;
 use teloxide::types::ChatId;
+use teloxide::types::FileId;
 use teloxide::types::InlineKeyboardButton;
 use teloxide::types::InlineKeyboardMarkup;
 use teloxide::types::InputFile;
+use teloxide::types::InputMedia;
+use teloxide::types::InputMediaPhoto;
 use teloxide::types::Message;
 use teloxide::types::MessageId;
 use teloxide::types::ParseMode;
@@ -42,6 +45,7 @@ type SharedContext = Arc<AppContext>;
 type BotDialogue = Dialogue<ConversationState, DialogueStorage>;
 
 const MAIN_MENU_TEXT: &str = "🤖 What would you like to do?";
+const MEDIA_GROUP_BATCH: usize = 10;
 
 pub fn build_schema() -> UpdateHandler<anyhow::Error> {
   let message_handler = Update::filter_message()
@@ -259,15 +263,29 @@ async fn handle_additem_message(
     return Ok(());
   }
 
-  if draft.image_file_id.is_none()
-    && let Some(photo) = msg.photo().and_then(|photos| photos.last())
+  let mut added_photo = false;
+  if let Some(photo) = msg.photo().and_then(|photos| photos.last())
+    && !draft.image_file_ids.iter().any(|existing| existing == &photo.file.id)
   {
-    draft.image_file_id = Some(photo.file.id.clone());
-    dialogue.update(ConversationState::AddItem(draft.clone())).await?;
+    draft.image_file_ids.push(photo.file.id.clone());
+    added_photo = true;
   }
 
   let text = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty());
   let chat_id = msg.chat.id;
+
+  if text.is_none() {
+    dialogue.update(ConversationState::AddItem(draft.clone())).await?;
+    if added_photo {
+      bot
+        .send_message(
+          chat_id,
+          format!("🖼️ Added photo. Total uploaded: {}.", draft.image_file_ids.len()),
+        )
+        .await?;
+    }
+    return Ok(());
+  }
 
   if matches!(text, Some(value) if value.eq_ignore_ascii_case("cancel")) {
     dialogue.reset().await?;
@@ -321,6 +339,7 @@ async fn handle_additem_message(
       match parse_money_to_cents(amount_text) {
         Ok(value) => {
           draft.start_price = Some(value);
+          let image_ids: Vec<String> = draft.image_file_ids.iter().map(|id| id.to_string()).collect();
           let item_id = ctx
             .db()
             .create_item(
@@ -332,7 +351,7 @@ async fn handle_additem_message(
                 .context("missing title during draft completion")?,
               draft.description.as_deref(),
               value,
-              draft.image_file_id.map(|e| e.to_string()).as_deref(),
+              &image_ids,
             )
             .await?;
           dialogue.reset().await?;
@@ -646,6 +665,55 @@ async fn handle_callback_query(
           callback_text = Some("❓ Item not found".to_string());
         }
       },
+      "img" => {
+        let mut parts = value.split(':');
+        if let (Some(item_str), Some(offset_str)) = (parts.next(), parts.next())
+          && let (Ok(item_id), Ok(offset)) = (item_str.parse::<i64>(), offset_str.parse::<usize>())
+        {
+          let images = ctx.db().list_item_images(item_id).await?;
+          if let Some((chat_id, message_id)) = message_ctx {
+            let total = images.len();
+            if offset >= total {
+              let request = bot
+                .edit_message_text(chat_id, message_id, "📷 All images shown.")
+                .reply_markup(InlineKeyboardMarkup::default());
+              if let Err(err) = request.await {
+                if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                  return Err(err.into());
+                }
+              }
+              callback_text = Some("📷 All images already shown.".to_string());
+            } else {
+              let next = send_item_images_chunk(&bot, chat_id, &images, offset, None).await?;
+              if next < total {
+                let remaining = total - next;
+                let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+                  format!("Show more images ({remaining})"),
+                  format!("img:{item_id}:{next}"),
+                )]]);
+                let request = bot
+                  .edit_message_text(chat_id, message_id, format!("📷 {remaining} more photo(s) available."))
+                  .reply_markup(keyboard);
+                if let Err(err) = request.await {
+                  if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                    return Err(err.into());
+                  }
+                }
+              } else {
+                let request = bot
+                  .edit_message_text(chat_id, message_id, "📷 All images shown.")
+                  .reply_markup(InlineKeyboardMarkup::default());
+                if let Err(err) = request.await {
+                  if !matches!(err, RequestError::Api(ApiError::MessageNotModified)) {
+                    return Err(err.into());
+                  }
+                }
+              }
+              callback_text = Some("📷 Sent more photos.".to_string());
+            }
+          }
+        }
+      },
       "back" => {
         if value == "categories"
           && let Some((chat_id, message_id)) = message_ctx
@@ -856,22 +924,71 @@ async fn send_item(
   let text = render_item_message(&item, best, viewer_ctx.as_ref());
   let keyboard = item_action_keyboard(item.id, item.is_open, viewer_ctx.as_ref());
 
-  if let Some(image) = item.image_file_id.clone() {
-    bot
-      .send_photo(chat, InputFile::file_id(image))
-      .caption(text)
-      .parse_mode(ParseMode::MarkdownV2)
-      .reply_markup(keyboard)
-      .await?;
-  } else {
-    bot
-      .send_message(chat, text)
-      .parse_mode(ParseMode::MarkdownV2)
-      .reply_markup(keyboard)
-      .await?;
+  bot
+    .send_message(chat, text.clone())
+    .parse_mode(ParseMode::MarkdownV2)
+    .reply_markup(keyboard)
+    .await?;
+
+  let mut images = ctx.db().list_item_images(item.id).await?;
+  if images.is_empty()
+    && let Some(legacy_cover) = item.image_file_id.clone()
+  {
+    images.push(legacy_cover);
+  }
+
+  if !images.is_empty() {
+    let next_offset = send_item_images_chunk(bot, chat, &images, 0, None).await?;
+    if next_offset < images.len() {
+      send_more_images_prompt(bot, chat, item.id, next_offset, images.len()).await?;
+    }
   }
 
   Ok(true)
+}
+
+async fn send_item_images_chunk(
+  bot: &Bot,
+  chat: ChatId,
+  images: &[FileId],
+  start: usize,
+  caption: Option<&str>,
+) -> Result<usize> {
+  if start >= images.len() {
+    return Ok(start);
+  }
+
+  let end = (start + MEDIA_GROUP_BATCH).min(images.len());
+  let mut media = Vec::new();
+  for (index, file_id) in images[start .. end].iter().enumerate() {
+    let mut photo = InputMediaPhoto::new(InputFile::file_id(file_id.clone()));
+    if let Some(text) = caption {
+      if start == 0 && index == 0 {
+        photo = photo.caption(text.to_string()).parse_mode(ParseMode::MarkdownV2);
+      }
+    }
+    media.push(InputMedia::Photo(photo));
+  }
+
+  bot.send_media_group(chat, media).await?;
+  Ok(end)
+}
+
+async fn send_more_images_prompt(
+  bot: &Bot,
+  chat: ChatId,
+  item_id: i64,
+  next_offset: usize,
+  total: usize,
+) -> HandlerResult {
+  let remaining = total.saturating_sub(next_offset);
+  let text = format!("📷 {remaining} more photo(s) available.");
+  let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+    format!("Show more images ({remaining})"),
+    format!("img:{item_id}:{next_offset}"),
+  )]]);
+  bot.send_message(chat, text).reply_markup(keyboard).await?;
+  Ok(())
 }
 
 fn render_item_message(item: &ItemRow, best: Option<i64>, viewer: Option<&ItemViewerContext>) -> String {
