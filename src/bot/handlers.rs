@@ -24,6 +24,7 @@ use teloxide::types::User;
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::markdown;
 use thiserror::Error;
+use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
@@ -73,16 +74,19 @@ fn command_branch() -> UpdateHandler<anyhow::Error> {
     .branch(dptree::case![Command::Help].endpoint(handle_help))
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_start(bot: Bot, dialogue: BotDialogue, ctx: SharedContext, msg: Message) -> HandlerResult {
   dialogue.reset().await?;
   let user = msg.from.as_ref().context("message missing sender")?;
   let user_id = user.id.0 as i64;
+  let username = user.username.as_deref().unwrap_or("-");
+  info!(user_id, chat_id = %msg.chat.id, username, "received /start command");
   send_main_menu_message(&bot, &ctx, msg.chat.id, user_id).await
 }
 
-#[instrument(skip(bot))]
+#[instrument(skip(bot, msg))]
 async fn handle_help(bot: Bot, msg: Message) -> HandlerResult {
+  info!(chat_id = %msg.chat.id, "received /help command");
   let mut text = Command::descriptions().to_string();
   text.push_str(
     "\n\nAll auction features are available from the on-screen menu buttons. Use /start to open the menu again.",
@@ -97,6 +101,7 @@ async fn send_main_menu_message(bot: &Bot, ctx: &SharedContext, chat: ChatId, us
     .send_message(chat, MAIN_MENU_TEXT)
     .reply_markup(main_menu_keyboard(ctx, user_id))
     .await?;
+  info!(user_id, chat_id = %chat, "sent main menu message");
   Ok(())
 }
 
@@ -112,10 +117,13 @@ async fn show_main_menu(
   let request = bot
     .edit_message_text(chat, message_id, MAIN_MENU_TEXT)
     .reply_markup(keyboard);
-  if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-  {
-    return Err(err.into());
+  match request.await {
+    Ok(_) => info!(user_id, chat_id = %chat, message_id = %message_id, "updated main menu message"),
+    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      info!(user_id, chat_id = %chat, message_id = %message_id, "main menu message already current");
+      return Ok(());
+    },
+    Err(err) => return Err(err.into()),
   }
   Ok(())
 }
@@ -185,10 +193,13 @@ async fn show_admin_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> Hand
   let request = bot
     .edit_message_text(chat, message_id, "🛡️ Admin panel\n\nChoose an action:")
     .reply_markup(admin_menu_keyboard());
-  if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-  {
-    return Err(err.into());
+  match request.await {
+    Ok(_) => info!(chat_id = %chat, message_id = %message_id, "updated admin menu"),
+    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      info!(chat_id = %chat, message_id = %message_id, "admin menu already current");
+      return Ok(());
+    },
+    Err(err) => return Err(err.into()),
   }
   Ok(())
 }
@@ -198,10 +209,13 @@ async fn show_settings_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> H
   let request = bot
     .edit_message_text(chat, message_id, "⚙️ Settings\n\nNothing to configure yet. Stay tuned!")
     .reply_markup(settings_menu_keyboard());
-  if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-  {
-    return Err(err.into());
+  match request.await {
+    Ok(_) => info!(chat_id = %chat, message_id = %message_id, "updated settings menu"),
+    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      info!(chat_id = %chat, message_id = %message_id, "settings menu already current");
+      return Ok(());
+    },
+    Err(err) => return Err(err.into()),
   }
   Ok(())
 }
@@ -211,10 +225,12 @@ async fn send_favorites_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_
   let favorites = ctx.db().list_favorites(user_id).await?;
 
   if favorites.is_empty() {
+    info!(user_id, chat_id = %chat, "no favorites to display");
     bot.send_message(chat, "⭐ No favorites yet.").await?;
     return Ok(());
   }
 
+  info!(user_id, chat_id = %chat, count = favorites.len(), "sending favorites list");
   bot
     .send_message(chat, format!("⭐ Favorites ({}):", favorites.len()))
     .await?;
@@ -233,10 +249,12 @@ async fn send_my_bids_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id
   let bids = ctx.db().list_user_bid_items(user_id).await?;
 
   if bids.is_empty() {
+    info!(user_id, chat_id = %chat, "no bids to display");
     bot.send_message(chat, "🪙 You have not placed any bids yet.").await?;
     return Ok(());
   }
 
+  info!(user_id, chat_id = %chat, count = bids.len(), "sending bid summary");
   bot
     .send_message(chat, format!("🪙 Active bids ({} items):", bids.len()))
     .await?;
@@ -250,7 +268,7 @@ async fn send_my_bids_list(bot: &Bot, ctx: &SharedContext, chat: ChatId, user_id
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue, draft))]
+#[instrument(skip(bot, ctx, dialogue, msg, draft))]
 async fn handle_additem_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -279,6 +297,12 @@ async fn handle_additem_message(
 
   let text = message_text(&msg).map(|t| t.trim()).filter(|t| !t.is_empty());
   let chat_id = msg.chat.id;
+  info!(
+    seller_id = draft.seller_tg_id,
+    chat_id = %chat_id,
+    stage = ?draft.stage,
+    "handling add item input"
+  );
 
   if text.is_none() {
     dialogue.update(ConversationState::AddItem(draft.clone())).await?;
@@ -289,6 +313,12 @@ async fn handle_additem_message(
           format!("🖼️ Added photo. Total uploaded: {}.", draft.image_file_ids.len()),
         )
         .await?;
+      info!(
+        seller_id = draft.seller_tg_id,
+        chat_id = %chat_id,
+        total_photos = draft.image_file_ids.len(),
+        "stored new draft photo"
+      );
     }
     return Ok(());
   }
@@ -378,7 +408,7 @@ async fn handle_additem_message(
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_bid_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -389,6 +419,7 @@ async fn handle_bid_message(
   let user = msg.from.as_ref().context("message missing sender")?;
   let bidder_id = user.id.0 as i64;
   let chat_id = msg.chat.id;
+  info!(bidder_id, chat_id = %chat_id, item_id = draft.item_id, "handling bid input");
 
   if bidder_id != draft.bidder_tg_id {
     bot.send_message(chat_id, "Another bid is already in progress.").await?;
@@ -415,6 +446,7 @@ async fn handle_bid_message(
           )
           .await?;
         let _ = notify_seller(&bot, &item, user, amount_cents).await;
+        info!(bidder_id, item_id = draft.item_id, amount_cents, "bid accepted");
         match send_item(&bot, &ctx, chat_id, draft.item_id, Some(bidder_id)).await {
           Ok(true) => {},
           Ok(false) => warn!(item_id = draft.item_id, "item no longer available after bid"),
@@ -445,7 +477,7 @@ async fn handle_bid_message(
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_add_category_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -468,6 +500,8 @@ async fn handle_add_category_message(
     return Ok(());
   };
 
+  info!(admin_tg_id, chat_id = %msg.chat.id, "processing add category input");
+
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
     bot.send_message(msg.chat.id, "❌ Category creation cancelled.").await?;
@@ -475,6 +509,7 @@ async fn handle_add_category_message(
   }
 
   let (category, existing) = ensure_category(&ctx, raw_text).await?;
+  info!(admin_tg_id, category_id = category.id, existing, "ensured category");
   dialogue.reset().await?;
 
   let response = if existing {
@@ -515,6 +550,7 @@ fn build_category_picker_keyboard(categories: &[CategoryRow]) -> InlineKeyboardM
 async fn send_category_picker_message(bot: &Bot, ctx: &SharedContext, chat: ChatId) -> HandlerResult {
   let categories = ctx.db().list_categories().await?;
   if categories.is_empty() {
+    info!(chat_id = %chat, "no categories to show in picker");
     bot
       .send_message(
         chat,
@@ -522,6 +558,7 @@ async fn send_category_picker_message(bot: &Bot, ctx: &SharedContext, chat: Chat
       )
       .await?;
   } else {
+    info!(chat_id = %chat, count = categories.len(), "sending category picker");
     let kb = build_category_picker_keyboard(&categories);
     let txt = format!(
       "🗂️ Choose a category \\(or tap {}\\):",
@@ -536,7 +573,7 @@ async fn send_category_picker_message(bot: &Bot, ctx: &SharedContext, chat: Chat
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_close_item_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -559,9 +596,11 @@ async fn handle_close_item_message(
     return Ok(());
   };
 
+  info!(admin_tg_id, chat_id = %msg.chat.id, "processing close item input");
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
     bot.send_message(msg.chat.id, "❌ Item closure cancelled.").await?;
+    info!(admin_tg_id, chat_id = %msg.chat.id, "close item cancelled by admin");
     return Ok(());
   }
 
@@ -574,6 +613,7 @@ async fn handle_close_item_message(
   };
 
   ctx.db().close_item(item_id).await?;
+  info!(admin_tg_id, item_id, "closed item");
   dialogue.reset().await?;
   bot
     .send_message(msg.chat.id, format!("🛑 Item #{item_id} closed."))
@@ -581,7 +621,7 @@ async fn handle_close_item_message(
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_remove_item_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -604,9 +644,11 @@ async fn handle_remove_item_message(
     return Ok(());
   };
 
+  info!(admin_tg_id, chat_id = %msg.chat.id, "processing remove item input");
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
     bot.send_message(msg.chat.id, "❌ Item removal cancelled.").await?;
+    info!(admin_tg_id, chat_id = %msg.chat.id, "remove item cancelled by admin");
     return Ok(());
   }
 
@@ -620,6 +662,7 @@ async fn handle_remove_item_message(
 
   if ctx.db().delete_item(item_id).await? {
     dialogue.reset().await?;
+    info!(admin_tg_id, item_id, "item removed");
     bot
       .send_message(
         msg.chat.id,
@@ -627,6 +670,7 @@ async fn handle_remove_item_message(
       )
       .await?;
   } else {
+    info!(admin_tg_id, item_id, "item not found for removal");
     bot
       .send_message(msg.chat.id, "❓ Item not found or already removed.")
       .await?;
@@ -635,7 +679,7 @@ async fn handle_remove_item_message(
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, msg))]
 async fn handle_remove_category_message(
   bot: Bot,
   dialogue: BotDialogue,
@@ -661,9 +705,11 @@ async fn handle_remove_category_message(
     return Ok(());
   };
 
+  info!(admin_tg_id, chat_id = %msg.chat.id, "processing remove category input");
   if raw_text.eq_ignore_ascii_case("cancel") {
     dialogue.reset().await?;
     bot.send_message(msg.chat.id, "❌ Category removal cancelled.").await?;
+    info!(admin_tg_id, chat_id = %msg.chat.id, "remove category cancelled by admin");
     return Ok(());
   }
 
@@ -672,9 +718,13 @@ async fn handle_remove_category_message(
     return Ok(());
   };
 
+  info!(admin_tg_id, category_id = category.id, "category found for removal");
+
   let item_count = ctx.db().list_items_by_category(category.id).await?.len();
+  info!(admin_tg_id, category_id = category.id, item_count, "removing category");
   if ctx.db().delete_category(category.id).await? {
     dialogue.reset().await?;
+    info!(admin_tg_id, category_id = category.id, item_count, "category removed");
     bot
       .send_message(
         msg.chat.id,
@@ -685,6 +735,7 @@ async fn handle_remove_category_message(
       )
       .await?;
   } else {
+    info!(admin_tg_id, category_id = category.id, "category not removed");
     bot
       .send_message(msg.chat.id, "❓ Category not found or already removed.")
       .await?;
@@ -693,7 +744,7 @@ async fn handle_remove_category_message(
   Ok(())
 }
 
-#[instrument(skip(bot))]
+#[instrument(skip(bot, msg))]
 async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> HandlerResult {
   if matches!(state, ConversationState::Idle)
     && let Some(text) = msg.text()
@@ -701,6 +752,7 @@ async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> H
     if text.starts_with('/') {
       // unknown command, ignore to let telegram handle
     } else {
+      info!(chat_id = %msg.chat.id, "idle state received unrecognized message");
       bot
         .send_message(msg.chat.id, "I did not understand that. Use the menu buttons or /help.")
         .await?;
@@ -709,7 +761,7 @@ async fn handle_idle_text(bot: Bot, msg: Message, state: ConversationState) -> H
   Ok(())
 }
 
-#[instrument(skip(bot, ctx, dialogue))]
+#[instrument(skip(bot, ctx, dialogue, query))]
 async fn handle_callback_query(
   bot: Bot,
   ctx: SharedContext,
@@ -719,6 +771,16 @@ async fn handle_callback_query(
   let mut callback_text: Option<String> = None;
   let user_id = query.from.id.0 as i64;
   let message_ctx = query.message.as_ref().map(|message| (message.chat().id, message.id()));
+  let callback_data = query.data.as_deref().unwrap_or("<empty>");
+  if let Some((chat_id, _)) = message_ctx {
+    info!(user_id, chat_id = %chat_id, callback = callback_data, "handling callback query");
+  } else {
+    info!(
+      user_id,
+      callback = callback_data,
+      "handling callback query without message context"
+    );
+  }
 
   if let Some(data) = query.data.as_deref()
     && let Some((prefix, value)) = data.split_once(':')
@@ -1037,20 +1099,26 @@ async fn update_categories_menu(
     let request = bot
       .edit_message_text(chat, message_id, "🗂️ No categories yet. Check back soon.")
       .reply_markup(main_menu_only_keyboard());
-    if let Err(err) = request.await
-      && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-    {
-      return Err(err.into());
+    match request.await {
+      Ok(_) => info!(chat_id = %chat, message_id = %message_id, "rendered empty categories menu"),
+      Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+        info!(chat_id = %chat, message_id = %message_id, "categories menu already empty");
+        return Ok(());
+      },
+      Err(err) => return Err(err.into()),
     }
   } else {
     let keyboard = build_categories_keyboard(&categories);
     let request = bot
       .edit_message_text(chat, message_id, "🗂️ Choose a category:")
       .reply_markup(keyboard);
-    if let Err(err) = request.await
-      && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-    {
-      return Err(err.into());
+    match request.await {
+      Ok(_) => info!(chat_id = %chat, message_id = %message_id, count = categories.len(), "rendered categories menu"),
+      Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+        info!(chat_id = %chat, message_id = %message_id, "categories menu already current");
+        return Ok(());
+      },
+      Err(err) => return Err(err.into()),
     }
   }
   Ok(())
@@ -1065,6 +1133,7 @@ async fn show_category_items_menu(
   category_name: &str,
 ) -> HandlerResult {
   let items = ctx.db().list_items_by_category(category_id).await?;
+  info!(category_id, count = items.len(), chat_id = %chat, "rendering category items menu");
   let text = if items.is_empty() {
     format!("🗂️ Category: {category_name}\n📭 No items in this category yet.")
   } else {
@@ -1072,10 +1141,13 @@ async fn show_category_items_menu(
   };
   let keyboard = build_items_keyboard(ctx, &items).await;
   let request = bot.edit_message_text(chat, message_id, text).reply_markup(keyboard);
-  if let Err(err) = request.await
-    && !matches!(err, RequestError::Api(ApiError::MessageNotModified))
-  {
-    return Err(err.into());
+  match request.await {
+    Ok(_) => info!(category_id, chat_id = %chat, message_id = %message_id, "rendered category items menu"),
+    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      info!(category_id, chat_id = %chat, message_id = %message_id, "category items menu already current");
+      return Ok(());
+    },
+    Err(err) => return Err(err.into()),
   }
   Ok(())
 }
