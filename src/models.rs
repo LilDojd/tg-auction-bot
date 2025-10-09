@@ -11,6 +11,7 @@ pub struct UserRow {
   pub username: Option<String>,
   pub first_name: Option<String>,
   pub last_name: Option<String>,
+  pub notifications_disabled: bool,
   pub created_at: DateTime<Utc>,
 }
 

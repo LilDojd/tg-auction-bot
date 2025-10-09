@@ -57,6 +57,59 @@ impl Db {
   }
 
   #[instrument(skip(self))]
+  pub async fn set_notifications_disabled(&self, user_id: i64, disabled: bool) -> Result<()> {
+    sqlx::query!(
+      r#"
+      INSERT INTO users (id, notifications_disabled)
+      VALUES ($1, $2)
+      ON CONFLICT (id) DO UPDATE SET
+        notifications_disabled = EXCLUDED.notifications_disabled
+      "#,
+      user_id,
+      disabled,
+    )
+    .execute(&self.pool)
+    .await?;
+    Ok(())
+  }
+
+  #[instrument(skip(self))]
+  pub async fn notifications_disabled(&self, user_id: i64) -> Result<bool> {
+    let disabled = sqlx::query_scalar!(
+      r#"
+      SELECT notifications_disabled
+      FROM users
+      WHERE id = $1
+      "#,
+      user_id
+    )
+    .fetch_optional(&self.pool)
+    .await?;
+    Ok(disabled.unwrap_or(false))
+  }
+
+  #[instrument(skip(self))]
+  pub async fn filter_notifications_allowed(&self, user_ids: &[i64]) -> Result<Vec<i64>> {
+    if user_ids.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    let ids: Vec<i64> = user_ids.to_vec();
+    let allowed = sqlx::query_scalar!(
+      r#"
+      SELECT id
+      FROM users
+      WHERE id = ANY($1)
+        AND notifications_disabled = FALSE
+      "#,
+      &ids
+    )
+    .fetch_all(&self.pool)
+    .await?;
+    Ok(allowed)
+  }
+
+  #[instrument(skip(self))]
   pub async fn list_categories(&self) -> Result<Vec<CategoryRow>> {
     let rows = sqlx::query!(r#"SELECT id, name FROM categories ORDER BY name COLLATE "C""#)
       .fetch_all(&self.pool)
@@ -461,9 +514,15 @@ impl Db {
 
   #[instrument(skip(self))]
   pub async fn list_user_ids(&self) -> Result<Vec<i64>> {
-    let ids = sqlx::query_scalar!(r#"SELECT id FROM users"#)
-      .fetch_all(&self.pool)
-      .await?;
+    let ids = sqlx::query_scalar!(
+      r#"
+      SELECT id
+      FROM users
+      WHERE notifications_disabled = FALSE
+      "#
+    )
+    .fetch_all(&self.pool)
+    .await?;
     Ok(ids)
   }
 

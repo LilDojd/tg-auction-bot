@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      SELECT id\n      FROM users\n      WHERE id = ANY($1)\n        AND notifications_disabled = FALSE\n      ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5a8f00cc9112129dddf1b767f0fdffcbe9ebd00a15241590a665faa2cfaf7bd3"
+}

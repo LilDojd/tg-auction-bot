@@ -81,6 +81,7 @@ fn command_branch() -> UpdateHandler<anyhow::Error> {
 async fn handle_start(bot: Bot, dialogue: BotDialogue, ctx: SharedContext, msg: Message) -> HandlerResult {
   dialogue.reset().await?;
   let user = msg.from.as_ref().context("message missing sender")?;
+  ensure_user_record(&ctx, user).await?;
   let user_id = user.id.0 as i64;
   let username = user.username.as_deref().unwrap_or("-");
   info!(user_id, chat_id = %msg.chat.id, username, "received /start command");
@@ -186,8 +187,20 @@ fn main_menu_only_keyboard() -> InlineKeyboardMarkup {
   )]])
 }
 
-fn settings_menu_keyboard() -> InlineKeyboardMarkup {
-  main_menu_only_keyboard()
+fn settings_menu_keyboard(notifications_disabled: bool) -> InlineKeyboardMarkup {
+  let toggle_label = if notifications_disabled {
+    "🔔 Enable updates"
+  } else {
+    "🔕 Mute updates"
+  };
+
+  InlineKeyboardMarkup::new(vec![
+    vec![InlineKeyboardButton::callback(
+      toggle_label.to_string(),
+      "settings:toggle_notifications".to_string(),
+    )],
+    vec![InlineKeyboardButton::callback("⬅️ Main menu", "menu:root".to_string())],
+  ])
 }
 
 #[instrument(skip(bot, ctx))]
@@ -211,11 +224,28 @@ async fn show_admin_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> Hand
   Ok(())
 }
 
-#[instrument(skip(bot))]
-async fn show_settings_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> HandlerResult {
+#[instrument(skip(bot, ctx))]
+async fn show_settings_menu(
+  bot: &Bot,
+  ctx: &SharedContext,
+  chat: ChatId,
+  message_id: MessageId,
+  user_id: i64,
+) -> HandlerResult {
+  let notifications_disabled = ctx.db().notifications_disabled(user_id).await?;
+  let status_line = if notifications_disabled {
+    "🔕 Notifications are OFF"
+  } else {
+    "🔔 Notifications are ON"
+  };
+  let hint_line = "Toggle below to control auction updates.";
   let request = bot
-    .edit_message_text(chat, message_id, "⚙️ Settings\n\nNothing to configure yet. Stay tuned!")
-    .reply_markup(settings_menu_keyboard());
+    .edit_message_text(
+      chat,
+      message_id,
+      format!("⚙️ Settings\n\n{}\n{}", status_line, hint_line),
+    )
+    .reply_markup(settings_menu_keyboard(notifications_disabled));
   match request.await {
     Ok(_) => info!(chat_id = %chat, message_id = %message_id, "updated settings menu"),
     Err(RequestError::Api(ApiError::MessageNotModified)) => {
@@ -463,12 +493,13 @@ async fn handle_bid_message(
         if is_highest
           && let Some((outbid_user_id, outbid_amount)) = previous_best
           && outbid_user_id != bidder_id
-          && let Err(err) = notify_outbid_user(&bot, &item, outbid_user_id, outbid_amount, amount_cents, user).await
+          && let Err(err) =
+            notify_outbid_user(&bot, &ctx, &item, outbid_user_id, outbid_amount, amount_cents, user).await
         {
           warn!(error = %err, item_id = item.id, outbid_user_id, "failed to notify outbid user");
         }
 
-        let _ = notify_seller(&bot, &item, user, amount_cents).await;
+        let _ = notify_seller(&bot, &ctx, &item, user, amount_cents).await;
         info!(bidder_id, item_id = draft.item_id, amount_cents, "bid accepted");
         match send_item(&bot, &ctx, chat_id, draft.item_id, Some(bidder_id)).await {
           Ok(true) => {},
@@ -862,6 +893,7 @@ async fn handle_callback_query(
   query: CallbackQuery,
   dialogue: BotDialogue,
 ) -> HandlerResult {
+  ensure_user_record(&ctx, &query.from).await?;
   let mut callback_text: Option<String> = None;
   let user_id = query.from.id.0 as i64;
   let message_ctx = query.message.as_ref().map(|message| (message.chat().id, message.id()));
@@ -908,7 +940,7 @@ async fn handle_callback_query(
         "settings" => {
           dialogue.reset().await?;
           if let Some((chat_id, message_id)) = message_ctx {
-            show_settings_menu(&bot, chat_id, message_id).await?;
+            show_settings_menu(&bot, &ctx, chat_id, message_id, user_id).await?;
           }
         },
         "admin" => {
@@ -1234,6 +1266,22 @@ async fn handle_callback_query(
             }
           }
         }
+      },
+      "settings" => match value {
+        "toggle_notifications" => {
+          let currently_disabled = ctx.db().notifications_disabled(user_id).await?;
+          let next = !currently_disabled;
+          ctx.db().set_notifications_disabled(user_id, next).await?;
+          if let Some((chat_id, message_id)) = message_ctx {
+            show_settings_menu(&bot, &ctx, chat_id, message_id, user_id).await?;
+          }
+          callback_text = Some(if next {
+            "🔕 Notifications muted.".to_string()
+          } else {
+            "🔔 Notifications enabled.".to_string()
+          });
+        },
+        _ => {},
       },
       _ => {},
     }
@@ -1568,12 +1616,17 @@ async fn broadcast_text(bot: &Bot, user_ids: &[i64], text: &str, entities: Optio
 
 async fn notify_outbid_user(
   bot: &Bot,
+  ctx: &SharedContext,
   item: &ItemRow,
   previous_bidder_id: i64,
   previous_amount_cents: i64,
   new_amount_cents: i64,
   new_bidder: &User,
 ) -> Result<()> {
+  if ctx.db().notifications_disabled(previous_bidder_id).await? {
+    return Ok(());
+  }
+
   let bidder_label = if let Some(username) = &new_bidder.username {
     format!("@{username}")
   } else if let Some(last) = &new_bidder.last_name {
@@ -1605,6 +1658,12 @@ async fn notify_item_closed(bot: &Bot, ctx: &SharedContext, item: &ItemRow) -> R
   recipients.extend(bidder_ids);
   recipients.extend(favorite_ids);
 
+  let recipients: Vec<i64> = recipients.into_iter().collect();
+  if recipients.is_empty() {
+    return Ok(());
+  }
+
+  let recipients = ctx.db().filter_notifications_allowed(&recipients).await?;
   if recipients.is_empty() {
     return Ok(());
   }
@@ -1637,7 +1696,24 @@ async fn notify_item_closed(bot: &Bot, ctx: &SharedContext, item: &ItemRow) -> R
   Ok(())
 }
 
-async fn notify_seller(bot: &Bot, item: &ItemRow, user: &User, amount_cents: i64) -> Result<()> {
+async fn ensure_user_record(ctx: &SharedContext, user: &User) -> Result<()> {
+  ctx
+    .db()
+    .upsert_user(
+      user.id.0 as i64,
+      user.username.clone(),
+      Some(user.first_name.clone()),
+      user.last_name.clone(),
+    )
+    .await
+    .context("failed to upsert user record")
+}
+
+async fn notify_seller(bot: &Bot, ctx: &SharedContext, item: &ItemRow, user: &User, amount_cents: i64) -> Result<()> {
+  if ctx.db().notifications_disabled(item.seller_tg_id).await? {
+    return Ok(());
+  }
+
   let username = user.username.clone().unwrap_or_else(|| user.id.0.to_string());
   bot
     .send_message(

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      INSERT INTO users (id, notifications_disabled)\n      VALUES ($1, $2)\n      ON CONFLICT (id) DO UPDATE SET\n        notifications_disabled = EXCLUDED.notifications_disabled\n      ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6b78c3793bb64135e7455649386b958344b464b7f503b6cee51f23508e079086"
+}
