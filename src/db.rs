@@ -107,8 +107,8 @@ impl Db {
     let cover_image = image_file_ids.first().map(|id| id.as_str());
     let id = sqlx::query_scalar!(
       r#"
-      INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id, is_new)
+      VALUES ($1, $2, $3, $4, $5, $6, TRUE)
       RETURNING id
       "#,
       seller_tg_id,
@@ -152,6 +152,7 @@ impl Db {
         start_price,
         image_file_id,
         is_open,
+        is_new,
         created_at
       FROM items
       WHERE category_id = $1
@@ -173,6 +174,7 @@ impl Db {
           start_price: row.start_price,
           image_file_id: row.image_file_id.map(|i| i.into()),
           is_open: row.is_open,
+          is_new: row.is_new,
           created_at: row.created_at,
         })
         .collect(),
@@ -192,6 +194,7 @@ impl Db {
         start_price,
         image_file_id,
         is_open,
+        is_new,
         created_at
       FROM items
       WHERE id = $1
@@ -209,6 +212,7 @@ impl Db {
       start_price: row.start_price,
       image_file_id: row.image_file_id.map(|i| i.into()),
       is_open: row.is_open,
+      is_new: row.is_new,
       created_at: row.created_at,
     }))
   }
@@ -301,6 +305,7 @@ impl Db {
         i.start_price,
         i.image_file_id,
         i.is_open,
+        i.is_new,
         i.created_at,
         b.amount
       FROM bids b
@@ -325,6 +330,7 @@ impl Db {
           start_price: row.get("start_price"),
           image_file_id: row.get::<Option<String>, _>("image_file_id").map(Into::into),
           is_open: row.get("is_open"),
+          is_new: row.get("is_new"),
           created_at: row.get("created_at"),
         };
         let amount = row.get("amount");
@@ -423,6 +429,7 @@ impl Db {
              i.start_price,
              i.image_file_id,
              i.is_open,
+             i.is_new,
              i.created_at
       FROM favorites f
       INNER JOIN items i ON i.id = f.item_id
@@ -445,9 +452,73 @@ impl Db {
         start_price: row.get("start_price"),
         image_file_id: row.get::<Option<String>, _>("image_file_id").map(Into::into),
         is_open: row.get("is_open"),
+        is_new: row.get("is_new"),
         created_at: row.get("created_at"),
       })
       .collect();
     Ok(items)
+  }
+
+  #[instrument(skip(self))]
+  pub async fn list_user_ids(&self) -> Result<Vec<i64>> {
+    let ids = sqlx::query_scalar!(r#"SELECT id FROM users"#)
+      .fetch_all(&self.pool)
+      .await?;
+    Ok(ids)
+  }
+
+  #[instrument(skip(self))]
+  pub async fn list_new_items(&self) -> Result<Vec<ItemRow>> {
+    let rows = sqlx::query!(
+      r#"
+      SELECT
+        id,
+        seller_tg_id,
+        category_id,
+        title,
+        description,
+        start_price,
+        image_file_id,
+        is_open,
+        is_new,
+        created_at
+      FROM items
+      WHERE is_new = TRUE
+      ORDER BY created_at DESC
+      "#
+    )
+    .fetch_all(&self.pool)
+    .await?;
+
+    Ok(
+      rows
+        .into_iter()
+        .map(|row| ItemRow {
+          id: row.id,
+          seller_tg_id: row.seller_tg_id,
+          category_id: row.category_id,
+          title: row.title,
+          description: row.description,
+          start_price: row.start_price,
+          image_file_id: row.image_file_id.map(|i| i.into()),
+          is_open: row.is_open,
+          is_new: row.is_new,
+          created_at: row.created_at,
+        })
+        .collect(),
+    )
+  }
+
+  #[instrument(skip(self))]
+  pub async fn clear_new_item_flags(&self, item_ids: &[i64]) -> Result<()> {
+    if item_ids.is_empty() {
+      return Ok(());
+    }
+
+    let ids: Vec<i64> = item_ids.to_vec();
+    sqlx::query!("UPDATE items SET is_new = FALSE WHERE id = ANY($1)", &ids)
+      .execute(&self.pool)
+      .await?;
+    Ok(())
   }
 }

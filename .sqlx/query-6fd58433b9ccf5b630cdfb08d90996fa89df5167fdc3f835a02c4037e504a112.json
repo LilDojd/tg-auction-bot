@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE items SET is_new = FALSE WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6fd58433b9ccf5b630cdfb08d90996fa89df5167fdc3f835a02c4037e504a112"
+}

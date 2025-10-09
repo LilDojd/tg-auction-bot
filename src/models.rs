@@ -30,6 +30,7 @@ pub struct ItemRow {
   pub start_price: i64,
   pub image_file_id: Option<FileId>,
   pub is_open: bool,
+  pub is_new: bool,
   pub created_at: DateTime<Utc>,
 }
 

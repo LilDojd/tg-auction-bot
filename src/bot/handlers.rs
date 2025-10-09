@@ -19,6 +19,7 @@ use teloxide::types::InputFile;
 use teloxide::types::InputMedia;
 use teloxide::types::InputMediaPhoto;
 use teloxide::types::Message;
+use teloxide::types::MessageEntity;
 use teloxide::types::MessageId;
 use teloxide::types::ParseMode;
 use teloxide::types::User;
@@ -59,6 +60,7 @@ pub fn build_schema() -> UpdateHandler<anyhow::Error> {
     .branch(dptree::case![ConversationState::CloseItem { admin_tg_id }].endpoint(handle_close_item_message))
     .branch(dptree::case![ConversationState::RemoveItem { admin_tg_id }].endpoint(handle_remove_item_message))
     .branch(dptree::case![ConversationState::RemoveCategory { admin_tg_id }].endpoint(handle_remove_category_message))
+    .branch(dptree::case![ConversationState::Broadcast { admin_tg_id }].endpoint(handle_broadcast_message))
     .branch(dptree::endpoint(handle_idle_text));
 
   let callback_handler = Update::filter_callback_query()
@@ -120,7 +122,7 @@ async fn show_main_menu(
     .reply_markup(keyboard);
   match request.await {
     Ok(_) => info!(user_id, chat_id = %chat, message_id = %message_id, "updated main menu message"),
-    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+    Err(RequestError::Api(ApiError::MessageNotModified)) => {
       info!(user_id, chat_id = %chat, message_id = %message_id, "main menu message already current");
       return Ok(());
     },
@@ -165,9 +167,13 @@ fn admin_menu_keyboard() -> InlineKeyboardMarkup {
       InlineKeyboardButton::callback("🗑 Remove item", "admin:remove_item".to_string()),
       InlineKeyboardButton::callback("🗑 Remove category", "admin:remove_category".to_string()),
     ],
+    vec![
+      InlineKeyboardButton::callback("🛑 Close item", "admin:close_item".to_string()),
+      InlineKeyboardButton::callback("📢 Broadcast", "admin:broadcast".to_string()),
+    ],
     vec![InlineKeyboardButton::callback(
-      "🛑 Close item",
-      "admin:close_item".to_string(),
+      "🔔 Notify new lots",
+      "admin:notify_new".to_string(),
     )],
     vec![InlineKeyboardButton::callback("⬅️ Main menu", "menu:root".to_string())],
   ])
@@ -196,7 +202,7 @@ async fn show_admin_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> Hand
     .reply_markup(admin_menu_keyboard());
   match request.await {
     Ok(_) => info!(chat_id = %chat, message_id = %message_id, "updated admin menu"),
-    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+    Err(RequestError::Api(ApiError::MessageNotModified)) => {
       info!(chat_id = %chat, message_id = %message_id, "admin menu already current");
       return Ok(());
     },
@@ -212,7 +218,7 @@ async fn show_settings_menu(bot: &Bot, chat: ChatId, message_id: MessageId) -> H
     .reply_markup(settings_menu_keyboard());
   match request.await {
     Ok(_) => info!(chat_id = %chat, message_id = %message_id, "updated settings menu"),
-    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+    Err(RequestError::Api(ApiError::MessageNotModified)) => {
       info!(chat_id = %chat, message_id = %message_id, "settings menu already current");
       return Ok(());
     },
@@ -454,16 +460,12 @@ async fn handle_bid_message(
 
         bot.send_message(chat_id, confirmation).await?;
 
-        if is_highest {
-          if let Some((outbid_user_id, outbid_amount)) = previous_best {
-            if outbid_user_id != bidder_id {
-              if let Err(err) =
-                notify_outbid_user(&bot, &item, outbid_user_id, outbid_amount, amount_cents, user).await
-              {
-                warn!(error = %err, item_id = item.id, outbid_user_id, "failed to notify outbid user");
-              }
-            }
-          }
+        if is_highest
+          && let Some((outbid_user_id, outbid_amount)) = previous_best
+          && outbid_user_id != bidder_id
+          && let Err(err) = notify_outbid_user(&bot, &item, outbid_user_id, outbid_amount, amount_cents, user).await
+        {
+          warn!(error = %err, item_id = item.id, outbid_user_id, "failed to notify outbid user");
         }
 
         let _ = notify_seller(&bot, &item, user, amount_cents).await;
@@ -657,6 +659,59 @@ async fn handle_close_item_message(
   if let Err(err) = notify_item_closed(&bot, &ctx, &item).await {
     warn!(error = %err, item_id, "failed to notify watchers about closed item");
   }
+  Ok(())
+}
+
+#[instrument(skip(bot, ctx, dialogue, msg))]
+async fn handle_broadcast_message(
+  bot: Bot,
+  dialogue: BotDialogue,
+  ctx: SharedContext,
+  msg: Message,
+  admin_tg_id: i64,
+) -> HandlerResult {
+  let user = msg.from.as_ref().context("message missing sender")?;
+  if user.id.0 as i64 != admin_tg_id {
+    bot
+      .send_message(msg.chat.id, "Only the admin who started this action can respond.")
+      .await?;
+    return Ok(());
+  }
+
+  let Some(raw_text) = message_text(&msg) else {
+    bot
+      .send_message(
+        msg.chat.id,
+        "📢 Send the announcement text (formatting will be preserved).",
+      )
+      .await?;
+    return Ok(());
+  };
+
+  let text = raw_text.to_string();
+  let entities: Vec<MessageEntity> = msg.entities().map(|slice| slice.to_vec()).unwrap_or_default();
+
+  let recipients = ctx.db().list_user_ids().await?;
+  info!(
+    admin_tg_id,
+    recipient_count = recipients.len(),
+    "preparing broadcast message"
+  );
+
+  if recipients.is_empty() {
+    dialogue.reset().await?;
+    bot
+      .send_message(msg.chat.id, "📢 No users are registered to receive the announcement.")
+      .await?;
+    return Ok(());
+  }
+
+  let delivered = broadcast_text(&bot, &recipients, &text, (!entities.is_empty()).then_some(&entities)).await;
+
+  dialogue.reset().await?;
+  bot
+    .send_message(msg.chat.id, format!("📢 Broadcast sent to {delivered} user(s)."))
+    .await?;
   Ok(())
 }
 
@@ -935,6 +990,71 @@ async fn handle_callback_query(
               }
               callback_text = Some("🛑 Awaiting item ID.".to_string());
             },
+            "broadcast" => {
+              dialogue.reset().await?;
+              dialogue
+                .update(ConversationState::Broadcast { admin_tg_id: user_id })
+                .await?;
+              if let Some((chat_id, _)) = message_ctx {
+                bot
+                  .send_message(chat_id, "📢 Send the announcement text to broadcast to all users.")
+                  .await?;
+              }
+              callback_text = Some("📢 Waiting for announcement text.".to_string());
+            },
+            "notify_new" => {
+              dialogue.reset().await?;
+              let new_items = ctx.db().list_new_items().await?;
+              if new_items.is_empty() {
+                if let Some((chat_id, _)) = message_ctx {
+                  bot
+                    .send_message(chat_id, "🔔 No new lots are marked for notification.")
+                    .await?;
+                }
+                callback_text = Some("🔔 No new lots.".to_string());
+              } else {
+                let user_ids = ctx.db().list_user_ids().await?;
+                if user_ids.is_empty() {
+                  if let Some((chat_id, _)) = message_ctx {
+                    bot
+                      .send_message(chat_id, "🔔 No users are registered to receive the update.")
+                      .await?;
+                  }
+                  callback_text = Some("🔔 No users registered.".to_string());
+                } else {
+                  let mut announcement = String::from("🆕 New lots available!\n\n");
+                  for item in &new_items {
+                    let line = format!(
+                      "• #{} {} — start {}\n",
+                      item.id,
+                      item.title,
+                      format_cents(item.start_price)
+                    );
+                    announcement.push_str(&line);
+                  }
+
+                  info!(
+                    admin_tg_id = user_id,
+                    lot_count = new_items.len(),
+                    recipient_count = user_ids.len(),
+                    "broadcasting new lots"
+                  );
+                  let delivered = broadcast_text(&bot, &user_ids, &announcement, None).await;
+                  let ids: Vec<i64> = new_items.iter().map(|item| item.id).collect();
+                  ctx.db().clear_new_item_flags(&ids).await?;
+
+                  if let Some((chat_id, _)) = message_ctx {
+                    bot
+                      .send_message(
+                        chat_id,
+                        format!("🔔 Notified {delivered} user(s) about {} new lot(s).", new_items.len()),
+                      )
+                      .await?;
+                  }
+                  callback_text = Some("🔔 Notification sent.".to_string());
+                }
+              }
+            },
             _ => {},
           }
         }
@@ -1140,7 +1260,7 @@ async fn update_categories_menu(
       .reply_markup(main_menu_only_keyboard());
     match request.await {
       Ok(_) => info!(chat_id = %chat, message_id = %message_id, "rendered empty categories menu"),
-      Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      Err(RequestError::Api(ApiError::MessageNotModified)) => {
         info!(chat_id = %chat, message_id = %message_id, "categories menu already empty");
         return Ok(());
       },
@@ -1153,7 +1273,7 @@ async fn update_categories_menu(
       .reply_markup(keyboard);
     match request.await {
       Ok(_) => info!(chat_id = %chat, message_id = %message_id, count = categories.len(), "rendered categories menu"),
-      Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+      Err(RequestError::Api(ApiError::MessageNotModified)) => {
         info!(chat_id = %chat, message_id = %message_id, "categories menu already current");
         return Ok(());
       },
@@ -1182,7 +1302,7 @@ async fn show_category_items_menu(
   let request = bot.edit_message_text(chat, message_id, text).reply_markup(keyboard);
   match request.await {
     Ok(_) => info!(category_id, chat_id = %chat, message_id = %message_id, "rendered category items menu"),
-    Err(err) if matches!(err, RequestError::Api(ApiError::MessageNotModified)) => {
+    Err(RequestError::Api(ApiError::MessageNotModified)) => {
       info!(category_id, chat_id = %chat, message_id = %message_id, "category items menu already current");
       return Ok(());
     },
@@ -1388,6 +1508,11 @@ fn render_item_message(item: &ItemRow, best: Option<i64>, viewer: Option<&ItemVi
     }
   }
 
+  if item.is_new {
+    let line = markdown::escape("🆕 Newly listed");
+    text.push_str(&format!("\n{}", line));
+  }
+
   text.push_str(&format!(
     "\n📦 Status: {}",
     if item.is_open { "OPEN" } else { "CLOSED" }
@@ -1418,6 +1543,27 @@ fn item_action_keyboard(item_id: i64, open: bool, viewer: Option<&ItemViewerCont
   } else {
     InlineKeyboardMarkup::new(vec![row])
   }
+}
+
+async fn broadcast_text(bot: &Bot, user_ids: &[i64], text: &str, entities: Option<&[MessageEntity]>) -> usize {
+  let mut delivered = 0usize;
+  let payload = text.to_string();
+  let entity_payload = entities.map(|data| data.to_vec());
+  for user_id in user_ids {
+    let mut request = bot.send_message(ChatId(*user_id), payload.clone());
+    if let Some(entities) = &entity_payload {
+      request = request.entities(entities.clone());
+    }
+    match request.await {
+      Ok(_) => {
+        delivered += 1;
+      },
+      Err(err) => {
+        warn!(error = %err, target_user_id = user_id, "failed to deliver broadcast");
+      },
+    }
+  }
+  delivered
 }
 
 async fn notify_outbid_user(
@@ -1608,6 +1754,7 @@ mod tests {
       start_price: 100,
       image_file_id: None,
       is_open: true,
+      is_new: false,
       created_at: Utc::now(),
     };
     let text = render_item_message(&item, Some(150), None);
@@ -1626,6 +1773,7 @@ mod tests {
       start_price: 100,
       image_file_id: None,
       is_open: true,
+      is_new: false,
       created_at: Utc::now(),
     };
     let ctx = ItemViewerContext {

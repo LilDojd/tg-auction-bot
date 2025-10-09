@@ -21,6 +21,9 @@ pub enum ConversationState {
   RemoveCategory {
     admin_tg_id: i64,
   },
+  Broadcast {
+    admin_tg_id: i64,
+  },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

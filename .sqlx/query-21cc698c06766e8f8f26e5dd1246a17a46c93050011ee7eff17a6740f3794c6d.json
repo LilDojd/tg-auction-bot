@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n      INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id)\n      VALUES ($1, $2, $3, $4, $5, $6)\n      RETURNING id\n      ",
+  "query": "\n      INSERT INTO items (seller_tg_id, category_id, title, description, start_price, image_file_id, is_new)\n      VALUES ($1, $2, $3, $4, $5, $6, TRUE)\n      RETURNING id\n      ",
   "describe": {
     "columns": [
       {
@@ -23,5 +23,5 @@
       false
     ]
   },
-  "hash": "e5f6c2db3ebaa8958bb852ba21979874599f8813c9f3232a2987b20336801acf"
+  "hash": "21cc698c06766e8f8f26e5dd1246a17a46c93050011ee7eff17a6740f3794c6d"
 }

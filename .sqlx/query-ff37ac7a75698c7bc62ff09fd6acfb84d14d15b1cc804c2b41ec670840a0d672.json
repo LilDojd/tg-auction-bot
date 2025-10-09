@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n      SELECT\n        id,\n        seller_tg_id,\n        category_id,\n        title,\n        description,\n        start_price,\n        image_file_id,\n        is_open,\n        created_at\n      FROM items\n      WHERE id = $1\n      ",
+  "query": "\n      SELECT\n        id,\n        seller_tg_id,\n        category_id,\n        title,\n        description,\n        start_price,\n        image_file_id,\n        is_open,\n        is_new,\n        created_at\n      FROM items\n      WHERE is_new = TRUE\n      ORDER BY created_at DESC\n      ",
   "describe": {
     "columns": [
       {
@@ -45,14 +45,17 @@
       },
       {
         "ordinal": 8,
+        "name": "is_new",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": [
-        "Int8"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -63,8 +66,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "ff38df83389f35917275613993d05481c856157b23e5755e9b88b376f8a90aa0"
+  "hash": "ff37ac7a75698c7bc62ff09fd6acfb84d14d15b1cc804c2b41ec670840a0d672"
 }
