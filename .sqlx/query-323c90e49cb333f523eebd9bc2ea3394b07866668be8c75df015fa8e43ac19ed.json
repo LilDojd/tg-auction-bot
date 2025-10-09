@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n      SELECT bidder_tg_id, amount\n      FROM bids\n      WHERE item_id = $1\n      ORDER BY amount DESC, created_at ASC\n      LIMIT 1\n      ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bidder_tg_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "323c90e49cb333f523eebd9bc2ea3394b07866668be8c75df015fa8e43ac19ed"
+}

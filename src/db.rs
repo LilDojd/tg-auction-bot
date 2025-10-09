@@ -242,6 +242,24 @@ impl Db {
   }
 
   #[instrument(skip(self))]
+  pub async fn best_bid_with_bidder(&self, item_id: i64) -> Result<Option<(i64, i64)>> {
+    let row = sqlx::query!(
+      r#"
+      SELECT bidder_tg_id, amount
+      FROM bids
+      WHERE item_id = $1
+      ORDER BY amount DESC, created_at ASC
+      LIMIT 1
+      "#,
+      item_id
+    )
+    .fetch_optional(&self.pool)
+    .await?;
+
+    Ok(row.map(|row| (row.bidder_tg_id, row.amount)))
+  }
+
+  #[instrument(skip(self))]
   pub async fn user_best_bid_for_item(&self, item_id: i64, user_id: i64) -> Result<Option<i64>> {
     let value = sqlx::query_scalar::<_, i64>(
       "SELECT amount FROM bids WHERE item_id = $1 AND bidder_tg_id = $2 ORDER BY amount DESC LIMIT 1",
@@ -322,6 +340,22 @@ impl Db {
       .execute(&self.pool)
       .await?;
     Ok(())
+  }
+
+  #[instrument(skip(self))]
+  pub async fn list_item_bidder_ids(&self, item_id: i64) -> Result<Vec<i64>> {
+    let bidders = sqlx::query_scalar!(r#"SELECT DISTINCT bidder_tg_id FROM bids WHERE item_id = $1"#, item_id)
+      .fetch_all(&self.pool)
+      .await?;
+    Ok(bidders)
+  }
+
+  #[instrument(skip(self))]
+  pub async fn list_item_favorite_user_ids(&self, item_id: i64) -> Result<Vec<i64>> {
+    let favorites = sqlx::query_scalar!(r#"SELECT DISTINCT user_id FROM favorites WHERE item_id = $1"#, item_id)
+      .fetch_all(&self.pool)
+      .await?;
+    Ok(favorites)
   }
 
   #[instrument(skip(self))]

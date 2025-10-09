@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -432,19 +433,39 @@ async fn handle_bid_message(
   };
 
   match validate_bid(&ctx, draft.item_id, amount_text).await {
-    Ok((item, amount_cents)) => match ctx.db().place_bid(draft.item_id, bidder_id, amount_cents).await {
+    Ok((item, amount_cents, previous_best)) => match ctx.db().place_bid(draft.item_id, bidder_id, amount_cents).await
+    {
       Ok(_) => {
         dialogue.reset().await?;
-        bot
-          .send_message(
-            chat_id,
-            format!(
-              "Bid placed at {} for item #{}.",
-              format_cents(amount_cents),
-              draft.item_id
-            ),
-          )
-          .await?;
+
+        let highest = ctx.db().best_bid_with_bidder(draft.item_id).await?;
+        let mut confirmation = format!(
+          "Bid placed at {} for item #{}.",
+          format_cents(amount_cents),
+          draft.item_id
+        );
+        let is_highest = matches!(
+          highest,
+          Some((top_bidder, top_amount)) if top_bidder == bidder_id && top_amount == amount_cents
+        );
+        if is_highest {
+          confirmation.push_str("\n\n🎉 You're now the highest bidder!");
+        }
+
+        bot.send_message(chat_id, confirmation).await?;
+
+        if is_highest {
+          if let Some((outbid_user_id, outbid_amount)) = previous_best {
+            if outbid_user_id != bidder_id {
+              if let Err(err) =
+                notify_outbid_user(&bot, &item, outbid_user_id, outbid_amount, amount_cents, user).await
+              {
+                warn!(error = %err, item_id = item.id, outbid_user_id, "failed to notify outbid user");
+              }
+            }
+          }
+        }
+
         let _ = notify_seller(&bot, &item, user, amount_cents).await;
         info!(bidder_id, item_id = draft.item_id, amount_cents, "bid accepted");
         match send_item(&bot, &ctx, chat_id, draft.item_id, Some(bidder_id)).await {
@@ -612,12 +633,30 @@ async fn handle_close_item_message(
     },
   };
 
+  let Some(item) = ctx.db().get_item(item_id).await? else {
+    bot.send_message(msg.chat.id, "❓ Item not found.").await?;
+    return Ok(());
+  };
+
+  if !item.is_open {
+    dialogue.reset().await?;
+    bot
+      .send_message(msg.chat.id, format!("ℹ️ Item #{} is already closed.", item_id))
+      .await?;
+    info!(admin_tg_id, item_id, "close item requested but already closed");
+    return Ok(());
+  }
+
   ctx.db().close_item(item_id).await?;
   info!(admin_tg_id, item_id, "closed item");
   dialogue.reset().await?;
   bot
     .send_message(msg.chat.id, format!("🛑 Item #{item_id} closed."))
     .await?;
+
+  if let Err(err) = notify_item_closed(&bot, &ctx, &item).await {
+    warn!(error = %err, item_id, "failed to notify watchers about closed item");
+  }
   Ok(())
 }
 
@@ -1381,6 +1420,77 @@ fn item_action_keyboard(item_id: i64, open: bool, viewer: Option<&ItemViewerCont
   }
 }
 
+async fn notify_outbid_user(
+  bot: &Bot,
+  item: &ItemRow,
+  previous_bidder_id: i64,
+  previous_amount_cents: i64,
+  new_amount_cents: i64,
+  new_bidder: &User,
+) -> Result<()> {
+  let bidder_label = if let Some(username) = &new_bidder.username {
+    format!("@{username}")
+  } else if let Some(last) = &new_bidder.last_name {
+    format!("{} {last}", new_bidder.first_name)
+  } else {
+    new_bidder.first_name.clone()
+  };
+
+  let message = format!(
+    "⚠️ Your bid of {} on item #{} ({}) was beaten by {}. New highest bid: {}.",
+    format_cents(previous_amount_cents),
+    item.id,
+    item.title,
+    bidder_label,
+    format_cents(new_amount_cents),
+  );
+
+  bot.send_message(ChatId(previous_bidder_id), message).await?;
+  Ok(())
+}
+
+async fn notify_item_closed(bot: &Bot, ctx: &SharedContext, item: &ItemRow) -> Result<()> {
+  let db = ctx.db();
+  let winning_bid = db.best_bid_with_bidder(item.id).await?;
+  let bidder_ids = db.list_item_bidder_ids(item.id).await?;
+  let favorite_ids = db.list_item_favorite_user_ids(item.id).await?;
+
+  let mut recipients: HashSet<i64> = HashSet::new();
+  recipients.extend(bidder_ids);
+  recipients.extend(favorite_ids);
+
+  if recipients.is_empty() {
+    return Ok(());
+  }
+
+  for user_id in recipients {
+    let text = match winning_bid {
+      Some((winner_id, amount)) if user_id == winner_id => format!(
+        "🏁 Auction closed for item #{} ({}).\n\n🎉 Congratulations! You won with a bid of {}.",
+        item.id,
+        item.title,
+        format_cents(amount),
+      ),
+      Some((_, amount)) => format!(
+        "🏁 Auction closed for item #{} ({}).\nFinal price: {}. Thanks for taking part!",
+        item.id,
+        item.title,
+        format_cents(amount),
+      ),
+      None => format!(
+        "🏁 Auction closed for item #{} ({}).\nThe item closed with no bids.",
+        item.id, item.title,
+      ),
+    };
+
+    if let Err(err) = bot.send_message(ChatId(user_id), text).await {
+      warn!(error = %err, item_id = item.id, user_id, "failed to notify user about item closure");
+    }
+  }
+
+  Ok(())
+}
+
 async fn notify_seller(bot: &Bot, item: &ItemRow, user: &User, amount_cents: i64) -> Result<()> {
   let username = user.username.clone().unwrap_or_else(|| user.id.0.to_string());
   bot
@@ -1448,20 +1558,26 @@ impl BidError {
   }
 }
 
-async fn validate_bid(ctx: &SharedContext, item_id: i64, amount: &str) -> Result<(ItemRow, i64), BidError> {
+async fn validate_bid(
+  ctx: &SharedContext,
+  item_id: i64,
+  amount: &str,
+) -> Result<(ItemRow, i64, Option<(i64, i64)>), BidError> {
   let amount_cents = parse_money_to_cents(amount)?;
   let item = ctx.db().get_item(item_id).await?.ok_or(BidError::NotFound)?;
   if !item.is_open {
     return Err(BidError::Closed);
   }
-  if let Some(best) = ctx.db().best_bid_for_item(item_id).await? {
-    if amount_cents <= best {
-      return Err(BidError::TooLow(best));
+
+  let previous_best = ctx.db().best_bid_with_bidder(item_id).await?;
+  if let Some((_, best_amount)) = previous_best {
+    if amount_cents <= best_amount {
+      return Err(BidError::TooLow(best_amount));
     }
   } else if amount_cents < item.start_price {
     return Err(BidError::BelowStart(item.start_price));
   }
-  Ok((item, amount_cents))
+  Ok((item, amount_cents, previous_best))
 }
 
 #[cfg(test)]
