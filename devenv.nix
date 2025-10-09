@@ -1,7 +1,9 @@
 {
+  inputs,
   pkgs,
   ...
 }:
+  let pkgs-unstable = import inputs.nixpkgs-unstable { system = pkgs.stdenv.system; }; in
 {
   env.DATABASE_URL = "postgresql://localhost:5432/postgres";
   env.SQLX_OFFLINE = true;
@@ -42,6 +44,6 @@
     pkgs.cargo-deny
     pkgs.cargo-autoinherit
     pkgs.openssl
-    pkgs.flyctl
+    pkgs-unstable.flyctl
   ];
 }
